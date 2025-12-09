@@ -1,0 +1,31 @@
+"""API v1 Router - aggregates all endpoint routers."""
+from fastapi import APIRouter
+
+from app.api.v1.endpoints import chat, jobs, patents, graph
+
+api_router = APIRouter()
+
+# Include all endpoint routers
+api_router.include_router(
+    chat.router,
+    prefix="/chat",
+    tags=["Chat"]
+)
+
+api_router.include_router(
+    jobs.router,
+    prefix="/jobs",
+    tags=["Jobs"]
+)
+
+api_router.include_router(
+    patents.router,
+    prefix="/patents",
+    tags=["Patents"]
+)
+
+api_router.include_router(
+    graph.router,
+    prefix="/graph",
+    tags=["Graph"]
+)
