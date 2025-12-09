@@ -61,3 +61,31 @@ class ChatMessageResponse(BaseModel):
     job_id: str
     response: str
     metadata: Optional[Dict[str, Any]] = None
+
+
+class SimpleChatRequest(BaseModel):
+    """Request schema for simple chat (non-research questions)."""
+    message: str = Field(..., min_length=1, description="User message")
+    conversation_history: Optional[list] = Field(default=None, description="Previous messages for context")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "message": "What is GLP-1?",
+                "conversation_history": []
+            }
+        }
+
+
+class SimpleChatResponse(BaseModel):
+    """Response schema for simple chat."""
+    response: str = Field(..., description="AI response")
+    is_research_query: bool = Field(default=False, description="Whether this should trigger a research job")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "response": "GLP-1 (Glucagon-like peptide-1) is a hormone...",
+                "is_research_query": False
+            }
+        }

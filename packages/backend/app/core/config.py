@@ -2,7 +2,9 @@
 from typing import List
 from pydantic_settings import BaseSettings
 from functools import lru_cache
-
+from dotenv import load_dotenv
+import os
+load_dotenv(override=True)
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
@@ -26,10 +28,10 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.cors_origins.split(",")]
 
     # LLM Configuration
-    openai_api_key: str = ""
+    openai_api_key: str = os.getenv("OPENAI_API_KEY")
     anthropic_api_key: str = ""
     llm_provider: str = "openai"  # or "anthropic"
-    llm_model: str = "gpt-4-turbo-preview"
+    llm_model: str = "gpt-4o"
 
     # Job Configuration
     job_polling_interval: int = 2  # seconds

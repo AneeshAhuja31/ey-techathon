@@ -22,7 +22,7 @@ wheels/
 venv/
 .venv/
 ENV/
-
+**/.next/
 # Node
 node_modules/
 npm-debug.log*

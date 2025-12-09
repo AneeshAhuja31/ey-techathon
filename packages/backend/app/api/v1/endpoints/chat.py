@@ -1,12 +1,249 @@
 """Chat initiation endpoint."""
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from openai import OpenAI
 
 from app.db.database import get_db
-from app.schemas.chat import ChatInitiateRequest, ChatInitiateResponse
+from app.schemas.chat import (
+    ChatInitiateRequest,
+    ChatInitiateResponse,
+    SimpleChatRequest,
+    SimpleChatResponse,
+)
 from app.services.job_service import JobService
+from app.core.config import settings
 
 router = APIRouter()
+
+# System prompt for the AI assistant
+SYSTEM_PROMPT = """You are DrugAI, an intelligent assistant specialized in drug discovery and pharmaceutical research.
+You help researchers with:
+- Understanding drug mechanisms, molecules, and compounds
+- Explaining pharmaceutical concepts and terminology
+- Discussing clinical trials and regulatory processes
+- Providing insights on market trends and patent landscapes
+- Answering questions about diseases and therapeutic targets
+
+You are knowledgeable, helpful, and provide accurate scientific information.
+When users ask for comprehensive research, patent analysis, or market studies, suggest they use the research feature which will deploy specialized AI agents for in-depth analysis.
+
+Keep responses concise but informative. Use scientific terminology appropriately."""
+
+# Keywords that indicate a research job should be started
+RESEARCH_KEYWORDS = [
+    "research", "analyze", "comprehensive", "deep dive", "patent search",
+    "market analysis", "clinical trials", "find patents", "investigate",
+    "full analysis", "detailed study", "landscape analysis", "competitive analysis",
+    "start analysis", "run analysis", "begin research"
+]
+
+
+def is_research_query(message: str) -> bool:
+    """Determine if the message is requesting a research job."""
+    message_lower = message.lower()
+    return any(keyword in message_lower for keyword in RESEARCH_KEYWORDS)
+
+
+@router.post("/simple", response_model=SimpleChatResponse)
+async def simple_chat(request: SimpleChatRequest):
+    """
+    Simple chat endpoint for regular questions.
+
+    This endpoint uses OpenAI to answer general questions about
+    drug discovery, pharmaceuticals, and related topics.
+    """
+    try:
+        # Check if this should be a research query
+        if is_research_query(request.message):
+            return SimpleChatResponse(
+                response="It sounds like you want to conduct in-depth research. I can help with that! Would you like me to start a comprehensive analysis? This will deploy our specialized AI agents to gather market data, patents, clinical trials, and web intelligence. Just confirm and I'll start the research job.",
+                is_research_query=True
+            )
+
+        # Use OpenAI for regular chat
+        if not settings.openai_api_key:
+            # Fallback response if no API key
+            return SimpleChatResponse(
+                response=get_fallback_response(request.message),
+                is_research_query=False
+            )
+
+        client = OpenAI(api_key=settings.openai_api_key)
+
+        # Build messages
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+        # Add conversation history if provided
+        if request.conversation_history:
+            for msg in request.conversation_history[-10:]:  # Last 10 messages for context
+                messages.append({
+                    "role": msg.get("role", "user"),
+                    "content": msg.get("content", "")
+                })
+
+        # Add current message
+        messages.append({"role": "user", "content": request.message})
+
+        # Call OpenAI
+        response = client.chat.completions.create(
+            model=settings.llm_model,
+            messages=messages,
+            max_tokens=1000,
+            temperature=0.7,
+        )
+
+        ai_response = response.choices[0].message.content
+
+        return SimpleChatResponse(
+            response=ai_response,
+            is_research_query=False
+        )
+
+    except Exception as e:
+        print(f"Chat error: {e}")
+        return SimpleChatResponse(
+            response=get_fallback_response(request.message),
+            is_research_query=False
+        )
+
+
+def get_fallback_response(message: str) -> str:
+    """Generate a fallback response when OpenAI is unavailable."""
+    message_lower = message.lower()
+
+    # Simple keyword-based responses
+    if "glp-1" in message_lower or "glp1" in message_lower:
+        return """GLP-1 (Glucagon-like peptide-1) is an incretin hormone that plays a crucial role in glucose metabolism. It's secreted by intestinal L-cells after eating and stimulates insulin secretion while inhibiting glucagon release.
+
+GLP-1 receptor agonists (like semaglutide, liraglutide, and tirzepatide) are a class of medications used primarily for:
+- Type 2 diabetes management
+- Weight loss / Obesity treatment
+
+Popular GLP-1 medications include:
+- **Ozempic** (semaglutide) - for diabetes
+- **Wegovy** (semaglutide) - for weight loss
+- **Rybelsus** (oral semaglutide) - for diabetes
+- **Mounjaro** (tirzepatide) - dual GIP/GLP-1 agonist
+
+Would you like me to run a comprehensive research analysis on GLP-1 agonists?"""
+
+    elif "semaglutide" in message_lower:
+        return """Semaglutide is a GLP-1 receptor agonist developed by Novo Nordisk. It's available under several brand names:
+
+- **Ozempic** - Injectable for Type 2 diabetes (weekly)
+- **Wegovy** - Injectable for weight management (weekly)
+- **Rybelsus** - Oral tablet for Type 2 diabetes (daily)
+
+Mechanism: Semaglutide mimics the GLP-1 hormone, increasing insulin secretion, reducing appetite, and slowing gastric emptying.
+
+Key clinical outcomes:
+- Up to 15% weight loss in clinical trials
+- Significant HbA1c reduction
+- Cardiovascular benefits demonstrated
+
+Would you like a detailed patent landscape or clinical trial analysis?"""
+
+    elif "obesity" in message_lower or "weight loss" in message_lower:
+        return """Obesity is a chronic disease affecting over 650 million adults worldwide. Current pharmacological treatments include:
+
+**GLP-1 Agonists:**
+- Semaglutide (Wegovy) - 15-17% weight loss
+- Liraglutide (Saxenda) - 5-10% weight loss
+- Tirzepatide (Zepbound) - Up to 22% weight loss
+
+**Other Approved Medications:**
+- Orlistat - Lipase inhibitor
+- Phentermine/Topiramate - Appetite suppressant combination
+- Naltrexone/Bupropion - Central nervous system approach
+
+The obesity drug market is rapidly growing, with GLP-1 agonists dominating due to superior efficacy. Would you like me to analyze the market landscape or patent filings?"""
+
+    elif "patent" in message_lower:
+        return """Patents in drug discovery protect innovations in:
+- New molecular entities (composition of matter)
+- Formulations and delivery systems
+- Methods of treatment
+- Manufacturing processes
+
+Key considerations:
+- Patent term: Generally 20 years from filing
+- Patent cliffs: Major revenue loss when patents expire
+- Patent landscaping: Understanding competitive IP positions
+- FTO (Freedom to Operate): Ensuring no infringement
+
+For the GLP-1 space, key patent holders include Novo Nordisk, Eli Lilly, and various formulation innovators.
+
+Would you like me to run a comprehensive patent landscape analysis?"""
+
+    elif "clinical trial" in message_lower:
+        return """Clinical trials are research studies that test medical interventions in humans. They proceed through phases:
+
+**Phase 1:** Safety & dosing (20-100 participants)
+**Phase 2:** Efficacy & side effects (100-500 participants)
+**Phase 3:** Large-scale efficacy (1,000-5,000 participants)
+**Phase 4:** Post-market surveillance
+
+Key databases:
+- ClinicalTrials.gov - US registry
+- EU Clinical Trials Register
+- WHO ICTRP - Global registry
+
+For drug discovery, clinical trial data provides crucial insights into:
+- Efficacy signals
+- Safety profiles
+- Competitive positioning
+- Market timing
+
+Would you like me to search clinical trials for a specific molecule or indication?"""
+
+    elif "hello" in message_lower or "hi" in message_lower or "hey" in message_lower:
+        return """Hello! I'm DrugAI, your intelligent assistant for drug discovery and pharmaceutical research.
+
+I can help you with:
+- **Drug Information** - Mechanisms, compounds, molecules
+- **Market Analysis** - Industry trends and competitive landscape
+- **Patent Intelligence** - IP landscape and FTO analysis
+- **Clinical Trials** - Trial data and regulatory insights
+- **Disease Research** - Therapeutic targets and pathways
+
+For comprehensive research, I can deploy specialized AI agents to gather in-depth data. Just ask me to "research" or "analyze" a topic!
+
+What would you like to explore today?"""
+
+    elif "help" in message_lower or "what can you do" in message_lower:
+        return """I'm DrugAI, your pharmaceutical research assistant. Here's what I can help with:
+
+**Ask Me Questions About:**
+- Drug mechanisms and molecular targets
+- Pharmaceutical compounds and formulations
+- Disease pathways and therapeutic approaches
+- Market trends and competitive landscape
+- Patent information and IP strategy
+- Clinical trial phases and regulatory pathways
+
+**Start Research Analysis:**
+Say "research [topic]" or "analyze [topic]" to deploy our specialized AI agents for comprehensive data gathering on:
+- Market intelligence (IQVIA data)
+- Patent landscape analysis
+- Clinical trial summaries
+- Web intelligence gathering
+
+Example: "Research GLP-1 agonists for obesity treatment"
+
+What would you like to know?"""
+
+    else:
+        return """I'm DrugAI, specialized in drug discovery and pharmaceutical research. I can help with:
+
+- **Drug mechanisms** and molecular information
+- **Patent landscapes** and IP analysis
+- **Clinical trial** insights
+- **Market analysis** and competitive intelligence
+- **Disease and target** information
+
+Ask me any question about pharmaceuticals, or say "research [topic]" to start a comprehensive analysis with our specialized AI agents.
+
+What would you like to know?"""
 
 
 @router.post("/initiate", response_model=ChatInitiateResponse)
@@ -19,20 +256,10 @@ async def initiate_chat(
 
     This endpoint creates a new analysis job and starts the Master Agent
     to orchestrate the worker agents for comprehensive drug research.
-
-    - **query**: The research query (e.g., "Research GLP-1 agonists")
-    - **user_id**: Optional user identifier for tracking
-    - **options**: Analysis options (which workers to include)
-
-    Returns:
-    - **job_id**: Unique identifier to poll for status
-    - **status**: Initial status ("started")
-    - **estimated_duration**: Estimated completion time in seconds
     """
     try:
         job_service = JobService(db)
 
-        # Extract options if provided
         options = None
         if request.options:
             options = {
@@ -68,13 +295,7 @@ async def send_message(
     message: str,
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Send a follow-up message to an existing job.
-
-    This allows for interactive refinement of the analysis.
-    """
-    # For MVP, return a placeholder response
-    # In production, this would feed into the agent conversation
+    """Send a follow-up message to an existing job."""
     return {
         "job_id": job_id,
         "response": f"Received message: {message}. Follow-up queries will be supported in future versions.",
