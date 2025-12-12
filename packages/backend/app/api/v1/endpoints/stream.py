@@ -23,6 +23,7 @@ async def generate_job_events(job_id: str) -> AsyncGenerator[str, None]:
     last_worker_states = {}
     retry_count = 0
     max_retries = 300  # 5 minutes at 1 second intervals
+    setup_nodes_emitted = False
 
     while retry_count < max_retries:
         status = master_agent.get_job_status(job_id)
@@ -30,6 +31,27 @@ async def generate_job_events(job_id: str) -> AsyncGenerator[str, None]:
         if not status:
             yield f"data: {json.dumps({'type': 'error', 'message': 'Job not found'})}\n\n"
             break
+
+        # Emit setup nodes at the start (query_analyzer, document_check, chat_context, task_planner)
+        if not setup_nodes_emitted:
+            setup_nodes = [
+                ("query_analyzer", "Analyzing Query"),
+                ("document_check", "Checking Documents"),
+                ("chat_context", "Loading Context"),
+                ("task_planner", "Planning Tasks"),
+            ]
+            for node_id, node_name in setup_nodes:
+                setup_event = {
+                    "type": "node_update",
+                    "node_id": node_id,
+                    "node_name": node_name,
+                    "status": "completed",  # These are quick setup steps
+                    "progress": 100,
+                    "thought": get_worker_thought(node_id, "completed", 100),
+                }
+                yield f"data: {json.dumps(setup_event)}\n\n"
+            setup_nodes_emitted = True
+            await asyncio.sleep(0.1)  # Small delay between setup nodes
 
         # Send overall progress update if changed
         current_progress = status.get("progress", 0)
@@ -49,20 +71,35 @@ async def generate_job_events(job_id: str) -> AsyncGenerator[str, None]:
         workers = status.get("workers", [])
         for worker in workers:
             worker_name = worker.get("name", "")
-            worker_key = f"{worker_name}_{worker.get('status')}_{worker.get('progress')}"
+            worker_status = worker.get("status", "pending")
+            worker_progress = worker.get("progress", 0)
 
-            if worker_key != last_worker_states.get(worker_name):
+            # Map worker names to frontend node IDs
+            node_id_mapping = {
+                "IQVIA Insights": "iqvia_worker",
+                "Patent Landscape": "patent_worker",
+                "Clinical Trials": "clinical_worker",
+                "Web Intelligence": "web_intel_worker",
+                "Scientific Literature": "literature_worker",
+                "Company Knowledge": "company_rag_worker",
+                "Report Generator": "synthesizer",
+            }
+            node_id = node_id_mapping.get(worker_name, worker_name.lower().replace(" ", "_"))
+
+            worker_key = f"{node_id}_{worker_status}_{worker_progress}"
+
+            if worker_key != last_worker_states.get(node_id):
                 node_event = {
                     "type": "node_update",
-                    "node_id": worker_name.lower().replace(" ", "_"),
+                    "node_id": node_id,
                     "node_name": worker_name,
-                    "status": worker.get("status", "pending"),
-                    "progress": worker.get("progress", 0),
+                    "status": worker_status,
+                    "progress": worker_progress,
                     "error": worker.get("error"),
-                    "thought": get_worker_thought(worker_name, worker.get("status"), worker.get("progress")),
+                    "thought": get_worker_thought(node_id, worker_status, worker_progress),
                 }
                 yield f"data: {json.dumps(node_event)}\n\n"
-                last_worker_states[worker_name] = worker_key
+                last_worker_states[node_id] = worker_key
 
         # Check if job is complete
         job_status = status.get("status", "")
@@ -89,6 +126,86 @@ async def generate_job_events(job_id: str) -> AsyncGenerator[str, None]:
 def get_worker_thought(worker_name: str, status: str, progress: int) -> str:
     """Generate a thought/status message for the worker."""
     thoughts = {
+        # Setup nodes
+        "query_analyzer": {
+            "pending": "Waiting to analyze query...",
+            "in_progress": "Analyzing query intent and extracting entities...",
+            "running": "Understanding your research request...",
+            "completed": "Query analysis complete.",
+            "failed": "Query analysis encountered an error."
+        },
+        "document_check": {
+            "pending": "Waiting to check documents...",
+            "in_progress": "Checking for uploaded company documents...",
+            "running": "Searching document repository...",
+            "completed": "Document check complete.",
+            "failed": "Document check encountered an error."
+        },
+        "chat_context": {
+            "pending": "Waiting to load context...",
+            "in_progress": "Loading relevant conversation history...",
+            "running": "Retrieving context from chat history...",
+            "completed": "Context loaded.",
+            "failed": "Context loading encountered an error."
+        },
+        "task_planner": {
+            "pending": "Waiting to plan tasks...",
+            "in_progress": "Planning research subtasks...",
+            "running": "Creating execution plan for workers...",
+            "completed": "Task planning complete.",
+            "failed": "Task planning encountered an error."
+        },
+        # Worker nodes
+        "iqvia_worker": {
+            "pending": "Waiting to start market analysis...",
+            "in_progress": "Analyzing pharmaceutical market data and sales trends...",
+            "running": "Gathering IQVIA market intelligence data...",
+            "completed": "Market analysis complete.",
+            "failed": "Market analysis encountered an error."
+        },
+        "patent_worker": {
+            "pending": "Waiting to search patents...",
+            "in_progress": "Searching Google Patents and USPTO databases...",
+            "running": "Analyzing patent landscape and IP filings...",
+            "completed": "Patent search complete.",
+            "failed": "Patent search encountered an error."
+        },
+        "clinical_worker": {
+            "pending": "Waiting to search clinical trials...",
+            "in_progress": "Querying ClinicalTrials.gov for relevant studies...",
+            "running": "Analyzing clinical trial outcomes and phases...",
+            "completed": "Clinical trials analysis complete.",
+            "failed": "Clinical trials search encountered an error."
+        },
+        "company_rag_worker": {
+            "pending": "Waiting to search company documents...",
+            "in_progress": "Querying vector store for relevant documents...",
+            "running": "Analyzing company document embeddings...",
+            "completed": "Company document search complete.",
+            "failed": "Company document search encountered an error."
+        },
+        "web_intel_worker": {
+            "pending": "Waiting to gather web intelligence...",
+            "in_progress": "Searching with Tavily for latest news...",
+            "running": "Analyzing sentiment and recent developments...",
+            "completed": "Web intelligence gathering complete.",
+            "failed": "Web intelligence gathering encountered an error."
+        },
+        "literature_worker": {
+            "pending": "Waiting to search literature...",
+            "in_progress": "Searching PubMed for scientific papers...",
+            "running": "Analyzing research publications...",
+            "completed": "Literature search complete.",
+            "failed": "Literature search encountered an error."
+        },
+        "synthesizer": {
+            "pending": "Waiting to synthesize results...",
+            "in_progress": "Synthesizing findings from all agents...",
+            "running": "Generating comprehensive analysis report...",
+            "completed": "Report generation complete.",
+            "failed": "Report generation encountered an error."
+        },
+        # Legacy names (for backwards compatibility)
         "IQVIA Insights": {
             "pending": "Waiting to start market analysis...",
             "in_progress": "Analyzing pharmaceutical market data and sales trends...",
@@ -123,27 +240,6 @@ def get_worker_thought(worker_name: str, status: str, progress: int) -> str:
             "running": "Generating comprehensive analysis report...",
             "completed": "Report generation complete.",
             "failed": "Report generation encountered an error."
-        },
-        "Market Research": {
-            "pending": "Waiting to start market research...",
-            "in_progress": "Gathering pharmaceutical market data...",
-            "running": "Analyzing market trends and competitive landscape...",
-            "completed": "Market research complete.",
-            "failed": "Market research encountered an error."
-        },
-        "Patent Finder": {
-            "pending": "Waiting to search patents...",
-            "in_progress": "Searching patent databases...",
-            "running": "Analyzing patent filings and IP landscape...",
-            "completed": "Patent search complete.",
-            "failed": "Patent search encountered an error."
-        },
-        "Clinical Data": {
-            "pending": "Waiting to analyze clinical data...",
-            "in_progress": "Querying clinical trial databases...",
-            "running": "Analyzing clinical outcomes and safety data...",
-            "completed": "Clinical data analysis complete.",
-            "failed": "Clinical data analysis encountered an error."
         },
     }
 

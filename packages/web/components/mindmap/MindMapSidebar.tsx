@@ -10,8 +10,6 @@ import {
   Maximize2,
   Minimize2,
 } from "lucide-react";
-import { LangGraphCanvas } from "@/components/langgraph";
-import { NodeState } from "@/hooks/useSSE";
 import {
   ReactFlow,
   MiniMap,
@@ -30,7 +28,6 @@ import { getLayoutedElements } from "@/lib/layout";
 interface MindMapSidebarProps {
   isOpen: boolean;
   onToggle: () => void;
-  nodes?: NodeState[];
   mindMapData?: {
     nodes: Array<{
       id: string;
@@ -51,19 +48,10 @@ interface MindMapSidebarProps {
 export function MindMapSidebar({
   isOpen,
   onToggle,
-  nodes = [],
   mindMapData,
   className,
 }: MindMapSidebarProps) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const [activeTab, setActiveTab] = useState<"pipeline" | "mindmap">("pipeline");
-
-  // Auto-switch to pipeline when nodes are active
-  useEffect(() => {
-    if (nodes.length > 0 && nodes.some((n) => n.status === "running")) {
-      setActiveTab("pipeline");
-    }
-  }, [nodes]);
 
   // Toggle button shown when sidebar is closed
   if (!isOpen) {
@@ -100,7 +88,7 @@ export function MindMapSidebar({
       <div className="flex items-center justify-between px-4 py-3 border-b border-border-default">
         <div className="flex items-center gap-2">
           <Network className="w-5 h-5 text-accent-cyan" />
-          <span className="font-semibold text-text-primary">Analysis View</span>
+          <span className="font-semibold text-text-primary">Mind Map</span>
         </div>
         <div className="flex items-center gap-1">
           <button
@@ -124,64 +112,17 @@ export function MindMapSidebar({
         </div>
       </div>
 
-      {/* Tab buttons */}
-      <div className="flex border-b border-border-default">
-        <button
-          onClick={() => setActiveTab("pipeline")}
-          className={cn(
-            "flex-1 px-4 py-2 text-sm font-medium transition-colors",
-            activeTab === "pipeline"
-              ? "text-accent-cyan border-b-2 border-accent-cyan"
-              : "text-text-muted hover:text-text-primary"
-          )}
-        >
-          Pipeline
-          {nodes.some((n) => n.status === "running") && (
-            <span className="ml-2 w-2 h-2 rounded-full bg-accent-cyan inline-block animate-pulse" />
-          )}
-        </button>
-        <button
-          onClick={() => setActiveTab("mindmap")}
-          className={cn(
-            "flex-1 px-4 py-2 text-sm font-medium transition-colors",
-            activeTab === "mindmap"
-              ? "text-accent-cyan border-b-2 border-accent-cyan"
-              : "text-text-muted hover:text-text-primary"
-          )}
-        >
-          Mind Map
-        </button>
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 overflow-auto">
-        {activeTab === "pipeline" ? (
-          <div className="p-4">
-            {nodes.length > 0 ? (
-              <LangGraphCanvas nodes={nodes} isCompact={!isExpanded} />
-            ) : (
-              <div className="flex flex-col items-center justify-center h-48 text-text-muted">
-                <Network className="w-12 h-12 mb-3 opacity-30" />
-                <p className="text-sm">No active pipeline</p>
-                <p className="text-xs mt-1">
-                  Start a research query to see the agent pipeline
-                </p>
-              </div>
-            )}
-          </div>
+      {/* Content - Mind Map only (no tabs) */}
+      <div className="flex-1 overflow-auto p-4">
+        {mindMapData && mindMapData.nodes.length > 0 ? (
+          <MindMapView data={mindMapData} />
         ) : (
-          <div className="p-4">
-            {mindMapData && mindMapData.nodes.length > 0 ? (
-              <MindMapView data={mindMapData} />
-            ) : (
-              <div className="flex flex-col items-center justify-center h-48 text-text-muted">
-                <Network className="w-12 h-12 mb-3 opacity-30" />
-                <p className="text-sm">No mind map data</p>
-                <p className="text-xs mt-1">
-                  Complete a research analysis to generate a mind map
-                </p>
-              </div>
-            )}
+          <div className="flex flex-col items-center justify-center h-48 text-text-muted">
+            <Network className="w-12 h-12 mb-3 opacity-30" />
+            <p className="text-sm">No mind map data</p>
+            <p className="text-xs mt-1">
+              Complete a research analysis to generate a mind map
+            </p>
           </div>
         )}
       </div>
