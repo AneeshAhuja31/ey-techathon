@@ -206,7 +206,68 @@ export function LangGraphCanvas({
   );
 }
 
-// Inline version for chat messages - shows all nodes with status
+// Checkpoint circle component for the progress bar - sleek minimal design
+function CheckpointCircle({
+  stage,
+  state,
+  index,
+  isFirst,
+  isLast,
+}: {
+  stage: (typeof DEFAULT_PIPELINE)[0];
+  state: NodeState | undefined;
+  index: number;
+  isFirst: boolean;
+  isLast: boolean;
+}) {
+  const status = state?.status;
+  const isRunning = status === "running";
+  const isCompleted = status === "completed";
+  const isFailed = status === "failed";
+  const Icon = stage.icon;
+
+  return (
+    <div className="relative group flex flex-col items-center">
+      {/* Checkpoint circle - smaller and sleeker */}
+      <div
+        className={cn(
+          "relative w-5 h-5 rounded-full flex items-center justify-center transition-all duration-200",
+          isCompleted && "bg-accent-green",
+          isRunning && "bg-accent-cyan",
+          isFailed && "bg-red-500",
+          !isCompleted && !isRunning && !isFailed && "bg-gray-600 border border-gray-500"
+        )}
+      >
+        {/* Subtle pulse for running state */}
+        {isRunning && (
+          <span className="absolute inset-0 rounded-full bg-accent-cyan animate-ping opacity-30" />
+        )}
+
+        {/* Icon inside circle */}
+        {isCompleted ? (
+          <Check className="w-3 h-3 text-white" />
+        ) : isRunning ? (
+          <Loader2 className="w-3 h-3 text-white animate-spin" />
+        ) : isFailed ? (
+          <span className="text-white text-[10px] font-bold">!</span>
+        ) : (
+          <Icon className="w-2.5 h-2.5 text-gray-400" />
+        )}
+      </div>
+
+      {/* Compact tooltip on hover */}
+      <div className={cn(
+        "absolute -bottom-1 translate-y-full opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50",
+        "bg-gray-900 border border-gray-700 rounded px-2 py-1 shadow-lg",
+        "whitespace-nowrap pointer-events-none"
+      )}>
+        <span className="text-[10px] text-gray-200">{stage.name}</span>
+      </div>
+    </div>
+  );
+}
+
+// Inline version for chat messages - sleek checkpoint progress bar
 export function LangGraphInline({
   nodes,
   className,
@@ -222,120 +283,123 @@ export function LangGraphInline({
     return map;
   }, [nodes]);
 
-  // Count completed and total
+  // Count completed and find current running node
   const completedCount = nodes.filter((n) => n.status === "completed").length;
   const totalCount = DEFAULT_PIPELINE.length;
   const isComplete = completedCount === totalCount && totalCount > 0;
 
-  // Get status icon for a node
-  const getStatusIcon = (status: string | undefined) => {
-    switch (status) {
-      case "completed":
-        return <Check className="w-4 h-4 text-accent-green" />;
-      case "running":
-        return <Loader2 className="w-4 h-4 text-accent-cyan animate-spin" />;
-      case "failed":
-        return <span className="w-4 h-4 text-red-500">✕</span>;
-      default:
-        return <Clock className="w-4 h-4 text-text-muted opacity-50" />;
-    }
-  };
+  // Find the index of the current running node (or last completed if none running)
+  const currentNodeIndex = useMemo(() => {
+    let runningIndex = -1;
+    let lastCompletedIndex = -1;
+
+    DEFAULT_PIPELINE.forEach((stage, index) => {
+      const state = nodeStates.get(stage.id);
+      if (state?.status === "running") {
+        runningIndex = index;
+      }
+      if (state?.status === "completed") {
+        lastCompletedIndex = index;
+      }
+    });
+
+    return runningIndex >= 0 ? runningIndex : lastCompletedIndex;
+  }, [nodeStates]);
+
+  // Calculate progress percentage (smooth between nodes)
+  const progressPercent = useMemo(() => {
+    if (totalCount <= 1) return isComplete ? 100 : 0;
+
+    // Find the running node's progress within its segment
+    const runningNode = nodes.find(n => n.status === "running");
+    const runningProgress = runningNode?.progress || 0;
+
+    // Each node segment is 100 / (totalCount - 1) percent
+    const segmentWidth = 100 / (totalCount - 1);
+
+    // Base progress from completed nodes
+    const baseProgress = completedCount > 0 ? (completedCount - 1) * segmentWidth : 0;
+
+    // Add partial progress for running node
+    const runningContribution = currentNodeIndex >= completedCount
+      ? (runningProgress / 100) * segmentWidth
+      : segmentWidth;
+
+    return Math.min(baseProgress + runningContribution, 100);
+  }, [completedCount, currentNodeIndex, nodes, totalCount, isComplete]);
+
+  // Get current running thought for display
+  const currentThought = useMemo(() => {
+    const runningNode = nodes.find(n => n.status === "running");
+    if (runningNode?.thought) return runningNode.thought;
+    return isComplete ? "Analysis complete!" : "Starting analysis...";
+  }, [nodes, isComplete]);
 
   return (
     <div
       className={cn(
-        "bg-background-card border border-border-default rounded-lg p-4 shadow-md",
+        "bg-gray-900/50 border border-gray-700/50 rounded-lg p-3 backdrop-blur-sm",
         className
       )}
     >
-      {/* Progress header */}
-      <div className="flex items-center justify-between mb-3">
-        <span className="text-sm font-semibold text-text-primary">
-          Analysis Progress
-        </span>
-        <span className="text-xs font-medium text-text-muted bg-background-tertiary px-2 py-1 rounded">
-          {completedCount}/{totalCount} steps
+      {/* Compact header */}
+      <div className="flex items-center justify-between mb-1.5">
+        <div className="flex items-center gap-2">
+          {!isComplete && (
+            <Loader2 className="w-3 h-3 text-accent-cyan animate-spin" />
+          )}
+          {isComplete && (
+            <Check className="w-3 h-3 text-accent-green" />
+          )}
+          <span className="text-xs font-medium text-gray-300">
+            {isComplete ? "Analysis Complete" : "Analyzing"}
+          </span>
+        </div>
+        <span className="text-[10px] text-gray-500">
+          {completedCount}/{totalCount}
         </span>
       </div>
 
-      {/* Overall progress bar */}
-      <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden mb-4">
+      {/* Current thought - single line */}
+      <p className="text-[11px] text-gray-400 truncate mb-2">
+        {currentThought}
+      </p>
+
+      {/* Sleek progress bar with checkpoints */}
+      <div className="relative pt-1 pb-4">
+        {/* Background track - thinner */}
+        <div className="absolute top-3.5 left-2.5 right-2.5 h-0.5 bg-gray-700 rounded-full" />
+
+        {/* Filled progress track */}
         <div
           className={cn(
-            "h-full transition-all duration-500",
+            "absolute top-3.5 left-2.5 h-0.5 rounded-full transition-all duration-300 ease-out",
             isComplete
               ? "bg-accent-green"
-              : "bg-gradient-to-r from-accent-cyan to-accent-green"
+              : "bg-accent-cyan"
           )}
-          style={{ width: `${(completedCount / totalCount) * 100}%` }}
+          style={{
+            width: `calc(${progressPercent}% * (100% - 20px) / 100)`,
+          }}
         />
-      </div>
 
-      {/* All nodes list */}
-      <div className="space-y-2">
-        {DEFAULT_PIPELINE.map((stage) => {
-          const state = nodeStates.get(stage.id);
-          const status = state?.status;
-          const Icon = stage.icon;
-          const isRunning = status === "running";
-          const isCompleted = status === "completed";
-
-          return (
-            <div
-              key={stage.id}
-              className={cn(
-                "flex items-center gap-3 py-1.5 px-2 rounded-md transition-all",
-                isRunning && "bg-accent-cyan/10 border border-accent-cyan/30",
-                isCompleted && "opacity-70"
-              )}
-            >
-              {/* Status icon */}
-              <div className="flex-shrink-0 w-5 h-5 flex items-center justify-center">
-                {getStatusIcon(status)}
-              </div>
-
-              {/* Node icon */}
-              <Icon
-                className={cn(
-                  "w-4 h-4 flex-shrink-0",
-                  isRunning && "text-accent-cyan",
-                  isCompleted && "text-accent-green",
-                  !isRunning && !isCompleted && "text-text-muted"
-                )}
+        {/* Checkpoint circles */}
+        <div className="relative flex justify-between px-0">
+          {DEFAULT_PIPELINE.map((stage, index) => {
+            const state = nodeStates.get(stage.id);
+            return (
+              <CheckpointCircle
+                key={stage.id}
+                stage={stage}
+                state={state}
+                index={index}
+                isFirst={index === 0}
+                isLast={index === DEFAULT_PIPELINE.length - 1}
               />
-
-              {/* Node name and thought */}
-              <div className="flex-1 min-w-0">
-                <span
-                  className={cn(
-                    "text-sm",
-                    isRunning && "text-accent-cyan font-medium",
-                    isCompleted && "text-text-secondary",
-                    !isRunning && !isCompleted && "text-text-muted"
-                  )}
-                >
-                  {stage.name}
-                </span>
-                {isRunning && state?.thought && (
-                  <p className="text-xs text-text-muted truncate mt-0.5">
-                    {state.thought}
-                  </p>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Completion message */}
-      {isComplete && (
-        <div className="mt-4 pt-3 border-t border-border-default">
-          <div className="flex items-center gap-2 text-accent-green">
-            <Check className="w-4 h-4" />
-            <span className="text-sm font-medium">Analysis complete!</span>
-          </div>
+            );
+          })}
         </div>
-      )}
+      </div>
     </div>
   );
 }
