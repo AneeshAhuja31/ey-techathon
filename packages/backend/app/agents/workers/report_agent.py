@@ -52,148 +52,240 @@ class ReportGeneratorWorker(BaseWorker):
         }
 
     def _generate_mind_map(self, query: str, outputs: List[WorkerOutput]) -> Dict[str, Any]:
-        """Generate mind map visualization data."""
+        """Generate mind map visualization data dynamically from worker outputs."""
 
-        query_lower = query.lower()
+        nodes = []
+        edges = []
+        edge_id = 0
 
-        # GLP-1 specific mind map with hierarchical expand/collapse
-        if "glp-1" in query_lower or "glp1" in query_lower or "semaglutide" in query_lower:
-            return {
-                "nodes": [
-                    # Disease nodes (pink) - root level, expandable
-                    {"id": "disease_obesity", "label": "Obesity", "type": "disease",
-                     "childIds": ["mol_semaglutide", "mol_tirzepatide"], "isExpanded": True},
-                    {"id": "disease_t2d", "label": "Type 2 Diabetes", "type": "disease",
-                     "childIds": ["mol_semaglutide", "mol_tirzepatide"], "isExpanded": False},
+        # Helper to create safe IDs
+        def safe_id(prefix: str, name: str) -> str:
+            return f"{prefix}_{name.lower().replace(' ', '_').replace('-', '_')[:20]}"
 
-                    # Molecule nodes (purple/blue) - expandable with products
-                    {"id": "mol_semaglutide", "label": "Semaglutide", "type": "molecule",
-                     "parentId": "disease_obesity", "childIds": ["prod_wegovy", "prod_ozempic", "prod_rybelsus"], "isExpanded": True},
-                    {"id": "mol_tirzepatide", "label": "Tirzepatide", "type": "molecule",
-                     "parentId": "disease_obesity", "childIds": ["prod_mounjaro"], "isExpanded": False},
+        # Extract data from worker outputs
+        market_data = {}
+        patent_data = {}
+        clinical_data = {}
+        web_data = {}
 
-                    # Product nodes (yellow) - leaf nodes
-                    {"id": "prod_wegovy", "label": "Wegovy", "type": "product", "parentId": "mol_semaglutide",
-                     "data": {"match_score": 97, "manufacturer": "Novo Nordisk"}},
-                    {"id": "prod_ozempic", "label": "Ozempic", "type": "product", "parentId": "mol_semaglutide",
-                     "data": {"match_score": 95, "manufacturer": "Novo Nordisk"}},
-                    {"id": "prod_rybelsus", "label": "Rybelsus", "type": "product", "parentId": "mol_semaglutide",
-                     "data": {"match_score": 92, "manufacturer": "Novo Nordisk"}},
-                    {"id": "prod_mounjaro", "label": "Mounjaro", "type": "product", "parentId": "mol_tirzepatide",
-                     "data": {"match_score": 88, "manufacturer": "Eli Lilly"}},
-                ],
-                "edges": [
-                    # Disease to Molecule connections
-                    {"id": "e1", "source": "disease_obesity", "target": "mol_semaglutide"},
-                    {"id": "e2", "source": "disease_t2d", "target": "mol_semaglutide"},
-                    {"id": "e3", "source": "disease_obesity", "target": "mol_tirzepatide"},
-                    {"id": "e4", "source": "disease_t2d", "target": "mol_tirzepatide"},
+        for output in outputs:
+            if isinstance(output, dict):
+                worker_name = output.get("worker_name", "")
+                data = output.get("data", {})
+            else:
+                worker_name = getattr(output, "worker_name", "")
+                data = getattr(output, "data", {})
 
-                    # Molecule to Product connections
-                    {"id": "e5", "source": "mol_semaglutide", "target": "prod_wegovy"},
-                    {"id": "e6", "source": "mol_semaglutide", "target": "prod_ozempic"},
-                    {"id": "e7", "source": "mol_semaglutide", "target": "prod_rybelsus"},
-                    {"id": "e8", "source": "mol_tirzepatide", "target": "prod_mounjaro"},
-                ]
-            }
+            if not data:
+                continue
 
-        # Metformin/diabetes specific mind map with hierarchical expand/collapse
-        if "metformin" in query_lower or "diabetes" in query_lower:
-            return {
-                "nodes": [
-                    # Disease nodes (pink) - root level, expandable
-                    {"id": "disease_t2d", "label": "Type 2 Diabetes", "type": "disease",
-                     "childIds": ["mol_metformin", "mol_dapagliflozin", "mol_sitagliptin"], "isExpanded": True},
-                    {"id": "disease_prediabetes", "label": "Prediabetes", "type": "disease",
-                     "childIds": ["mol_metformin"], "isExpanded": False},
+            if "IQVIA" in worker_name or "Market" in worker_name:
+                market_data = data
+            elif "Patent" in worker_name:
+                patent_data = data
+            elif "Clinical" in worker_name:
+                clinical_data = data
+            elif "Web" in worker_name or "Intelligence" in worker_name:
+                web_data = data
 
-                    # Molecule nodes (purple/blue) - expandable with products
-                    {"id": "mol_metformin", "label": "Metformin", "type": "molecule",
-                     "parentId": "disease_t2d", "childIds": ["prod_glucophage", "prod_glucophage_xr", "prod_xigduo", "prod_janumet"], "isExpanded": True},
-                    {"id": "mol_dapagliflozin", "label": "Dapagliflozin", "type": "molecule",
-                     "parentId": "disease_t2d", "childIds": ["prod_farxiga"], "isExpanded": False},
-                    {"id": "mol_sitagliptin", "label": "Sitagliptin", "type": "molecule",
-                     "parentId": "disease_t2d", "childIds": ["prod_januvia"], "isExpanded": False},
-
-                    # Product nodes (yellow) - leaf nodes
-                    {"id": "prod_glucophage", "label": "Glucophage", "type": "product", "parentId": "mol_metformin",
-                     "data": {"match_score": 95, "manufacturer": "Bristol-Myers Squibb"}},
-                    {"id": "prod_glucophage_xr", "label": "Glucophage XR", "type": "product", "parentId": "mol_metformin",
-                     "data": {"match_score": 92, "manufacturer": "Bristol-Myers Squibb"}},
-                    {"id": "prod_xigduo", "label": "Xigduo XR", "type": "product", "parentId": "mol_metformin",
-                     "data": {"match_score": 88, "manufacturer": "AstraZeneca"}},
-                    {"id": "prod_janumet", "label": "Janumet", "type": "product", "parentId": "mol_metformin",
-                     "data": {"match_score": 85, "manufacturer": "Merck"}},
-                    {"id": "prod_farxiga", "label": "Farxiga", "type": "product", "parentId": "mol_dapagliflozin",
-                     "data": {"match_score": 90, "manufacturer": "AstraZeneca"}},
-                    {"id": "prod_januvia", "label": "Januvia", "type": "product", "parentId": "mol_sitagliptin",
-                     "data": {"match_score": 87, "manufacturer": "Merck"}},
-                ],
-                "edges": [
-                    # Disease to Molecule connections
-                    {"id": "e1", "source": "disease_t2d", "target": "mol_metformin"},
-                    {"id": "e2", "source": "disease_prediabetes", "target": "mol_metformin"},
-                    {"id": "e3", "source": "disease_t2d", "target": "mol_dapagliflozin"},
-                    {"id": "e4", "source": "disease_t2d", "target": "mol_sitagliptin"},
-
-                    # Molecule to Product connections
-                    {"id": "e5", "source": "mol_metformin", "target": "prod_glucophage"},
-                    {"id": "e6", "source": "mol_metformin", "target": "prod_glucophage_xr"},
-                    {"id": "e7", "source": "mol_metformin", "target": "prod_xigduo"},
-                    {"id": "e8", "source": "mol_metformin", "target": "prod_janumet"},
-                    {"id": "e9", "source": "mol_dapagliflozin", "target": "prod_farxiga"},
-                    {"id": "e10", "source": "mol_sitagliptin", "target": "prod_januvia"},
-                ]
-            }
-
-        # Generic mind map structure - create a meaningful hierarchy based on query
-        # Extract key terms from query for labeling
-        query_terms = query.split()
+        # Root node - the query topic
         main_topic = query[:30] if len(query) <= 30 else query[:27] + "..."
+        root_id = "root_query"
+        category_ids = []
 
-        return {
-            "nodes": [
-                # Root disease/condition node
-                {"id": "disease_main", "label": main_topic, "type": "disease",
-                 "childIds": ["mol_research", "mol_treatment", "mol_pipeline"], "isExpanded": True},
+        # === MARKET DATA CATEGORY ===
+        market_products = market_data.get("top_products", [])
+        if market_products:
+            market_cat_id = "cat_market"
+            product_ids = []
 
-                # Molecule/research area nodes
-                {"id": "mol_research", "label": "Research Areas", "type": "molecule",
-                 "parentId": "disease_main", "childIds": ["prod_clinical", "prod_preclinical"], "isExpanded": False},
-                {"id": "mol_treatment", "label": "Current Treatments", "type": "molecule",
-                 "parentId": "disease_main", "childIds": ["prod_approved", "prod_offlabel"], "isExpanded": False},
-                {"id": "mol_pipeline", "label": "Pipeline", "type": "molecule",
-                 "parentId": "disease_main", "childIds": ["prod_phase3", "prod_phase2"], "isExpanded": False},
+            for i, product in enumerate(market_products[:5]):  # Limit to 5
+                prod_name = product.get("name", f"Product {i+1}")
+                prod_id = safe_id("prod", f"market_{i}")
+                product_ids.append(prod_id)
 
-                # Product/detail nodes
-                {"id": "prod_clinical", "label": "Clinical Studies", "type": "product", "parentId": "mol_research",
-                 "data": {"match_score": 85}},
-                {"id": "prod_preclinical", "label": "Preclinical Research", "type": "product", "parentId": "mol_research",
-                 "data": {"match_score": 75}},
-                {"id": "prod_approved", "label": "Approved Therapies", "type": "product", "parentId": "mol_treatment",
-                 "data": {"match_score": 90}},
-                {"id": "prod_offlabel", "label": "Off-label Uses", "type": "product", "parentId": "mol_treatment",
-                 "data": {"match_score": 65}},
-                {"id": "prod_phase3", "label": "Phase 3 Trials", "type": "product", "parentId": "mol_pipeline",
-                 "data": {"match_score": 80}},
-                {"id": "prod_phase2", "label": "Phase 2 Trials", "type": "product", "parentId": "mol_pipeline",
-                 "data": {"match_score": 70}},
-            ],
-            "edges": [
-                # Disease to Molecule connections
-                {"id": "e1", "source": "disease_main", "target": "mol_research"},
-                {"id": "e2", "source": "disease_main", "target": "mol_treatment"},
-                {"id": "e3", "source": "disease_main", "target": "mol_pipeline"},
+                nodes.append({
+                    "id": prod_id,
+                    "label": prod_name[:25],
+                    "type": "product",
+                    "parentId": market_cat_id,
+                    "data": {
+                        "match_score": 90 - (i * 5),
+                        "manufacturer": product.get("manufacturer", ""),
+                        "revenue": product.get("revenue_2024", ""),
+                        "market_share": product.get("market_share", "")
+                    }
+                })
 
-                # Molecule to Product connections
-                {"id": "e4", "source": "mol_research", "target": "prod_clinical"},
-                {"id": "e5", "source": "mol_research", "target": "prod_preclinical"},
-                {"id": "e6", "source": "mol_treatment", "target": "prod_approved"},
-                {"id": "e7", "source": "mol_treatment", "target": "prod_offlabel"},
-                {"id": "e8", "source": "mol_pipeline", "target": "prod_phase3"},
-                {"id": "e9", "source": "mol_pipeline", "target": "prod_phase2"},
-            ]
-        }
+                edge_id += 1
+                edges.append({"id": f"e{edge_id}", "source": market_cat_id, "target": prod_id})
+
+            if product_ids:
+                category_ids.append(market_cat_id)
+                nodes.append({
+                    "id": market_cat_id,
+                    "label": "Market Products",
+                    "type": "molecule",
+                    "parentId": root_id,
+                    "childIds": product_ids,
+                    "isExpanded": False
+                })
+                edge_id += 1
+                edges.append({"id": f"e{edge_id}", "source": root_id, "target": market_cat_id})
+
+        # === PATENT DATA CATEGORY ===
+        patents = patent_data.get("patents", [])
+        if patents:
+            patent_cat_id = "cat_patents"
+            patent_ids = []
+
+            for i, patent in enumerate(patents[:5]):  # Limit to 5
+                patent_title = patent.get("title", f"Patent {i+1}")
+                patent_node_id = safe_id("pat", f"{i}")
+                patent_ids.append(patent_node_id)
+
+                nodes.append({
+                    "id": patent_node_id,
+                    "label": patent_title[:25],
+                    "type": "product",
+                    "parentId": patent_cat_id,
+                    "data": {
+                        "match_score": patent.get("relevance_score", 80),
+                        "patent_id": patent.get("patent_id", ""),
+                        "assignee": patent.get("assignee", ""),
+                        "expiration": patent.get("expiration_date", "")
+                    }
+                })
+
+                edge_id += 1
+                edges.append({"id": f"e{edge_id}", "source": patent_cat_id, "target": patent_node_id})
+
+            if patent_ids:
+                category_ids.append(patent_cat_id)
+                nodes.append({
+                    "id": patent_cat_id,
+                    "label": "Patents",
+                    "type": "molecule",
+                    "parentId": root_id,
+                    "childIds": patent_ids,
+                    "isExpanded": False
+                })
+                edge_id += 1
+                edges.append({"id": f"e{edge_id}", "source": root_id, "target": patent_cat_id})
+
+        # === CLINICAL TRIALS CATEGORY ===
+        trials = clinical_data.get("trials", [])
+        if trials:
+            clinical_cat_id = "cat_clinical"
+            trial_ids = []
+
+            for i, trial in enumerate(trials[:5]):  # Limit to 5
+                trial_title = trial.get("title", f"Trial {i+1}")
+                trial_id = safe_id("trial", f"{i}")
+                trial_ids.append(trial_id)
+
+                # Calculate score based on phase and status
+                phase = trial.get("phase", "")
+                status = trial.get("status", "")
+                score = 70
+                if "Phase 3" in phase:
+                    score = 90
+                elif "Phase 2" in phase:
+                    score = 75
+                if status == "Completed":
+                    score += 5
+
+                nodes.append({
+                    "id": trial_id,
+                    "label": trial_title[:25],
+                    "type": "product",
+                    "parentId": clinical_cat_id,
+                    "data": {
+                        "match_score": min(score, 99),
+                        "nct_id": trial.get("nct_id", ""),
+                        "phase": phase,
+                        "status": status,
+                        "sponsor": trial.get("sponsor", "")
+                    }
+                })
+
+                edge_id += 1
+                edges.append({"id": f"e{edge_id}", "source": clinical_cat_id, "target": trial_id})
+
+            if trial_ids:
+                category_ids.append(clinical_cat_id)
+                nodes.append({
+                    "id": clinical_cat_id,
+                    "label": "Clinical Trials",
+                    "type": "molecule",
+                    "parentId": root_id,
+                    "childIds": trial_ids,
+                    "isExpanded": False
+                })
+                edge_id += 1
+                edges.append({"id": f"e{edge_id}", "source": root_id, "target": clinical_cat_id})
+
+        # === WEB/NEWS CATEGORY ===
+        news = web_data.get("news", [])
+        if news:
+            news_cat_id = "cat_news"
+            news_ids = []
+
+            for i, article in enumerate(news[:4]):  # Limit to 4
+                article_title = article.get("title", f"News {i+1}")
+                news_node_id = safe_id("news", f"{i}")
+                news_ids.append(news_node_id)
+
+                nodes.append({
+                    "id": news_node_id,
+                    "label": article_title[:25],
+                    "type": "product",
+                    "parentId": news_cat_id,
+                    "data": {
+                        "match_score": int(article.get("score", 0.7) * 100),
+                        "source": article.get("source", ""),
+                        "date": article.get("published_date", ""),
+                        "url": article.get("url", "")
+                    }
+                })
+
+                edge_id += 1
+                edges.append({"id": f"e{edge_id}", "source": news_cat_id, "target": news_node_id})
+
+            if news_ids:
+                category_ids.append(news_cat_id)
+                nodes.append({
+                    "id": news_cat_id,
+                    "label": "Recent News",
+                    "type": "molecule",
+                    "parentId": root_id,
+                    "childIds": news_ids,
+                    "isExpanded": False
+                })
+                edge_id += 1
+                edges.append({"id": f"e{edge_id}", "source": root_id, "target": news_cat_id})
+
+        # If no data was found, create a minimal structure
+        if not category_ids:
+            category_ids = ["cat_no_data"]
+            nodes.append({
+                "id": "cat_no_data",
+                "label": "No data found",
+                "type": "molecule",
+                "parentId": root_id
+            })
+            edges.append({"id": "e1", "source": root_id, "target": "cat_no_data"})
+
+        # Add root node with all category children
+        nodes.insert(0, {
+            "id": root_id,
+            "label": main_topic,
+            "type": "disease",
+            "childIds": category_ids,
+            "isExpanded": True
+        })
+
+        return {"nodes": nodes, "edges": edges}
 
     def _generate_summary(self, query: str, outputs: List[WorkerOutput]) -> str:
         """Generate executive summary from worker outputs."""
