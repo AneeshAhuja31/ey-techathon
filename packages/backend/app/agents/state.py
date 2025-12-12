@@ -1,7 +1,37 @@
 """Shared state definitions for the LangGraph Master-Worker architecture."""
-from typing import TypedDict, Annotated, List, Optional, Dict, Any
+from typing import TypedDict, Annotated, List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field
 from datetime import datetime
+from enum import Enum
+
+
+class NodeStatus(str, Enum):
+    """Status of a node in the LangGraph pipeline."""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class EventType(str, Enum):
+    """Types of SSE events."""
+    PROGRESS = "progress"
+    NODE_UPDATE = "node_update"
+    THOUGHT = "thought"
+    COMPLETE = "complete"
+    ERROR = "error"
+    END = "end"
+
+
+class NodeEvent(BaseModel):
+    """Event emitted when a node status changes."""
+    type: EventType = EventType.NODE_UPDATE
+    node_id: str
+    node_name: str
+    status: NodeStatus
+    progress: int = 0
+    thought: Optional[str] = None
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 
 class WorkerOutput(BaseModel):
@@ -11,6 +41,7 @@ class WorkerOutput(BaseModel):
     progress: int = Field(default=0, ge=0, le=100, description="Progress percentage")
     data: Dict[str, Any] = Field(default_factory=dict, description="Worker output data")
     error: Optional[str] = Field(default=None, description="Error message if failed")
+    thought: Optional[str] = Field(default=None, description="Current thought/status message")
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
 

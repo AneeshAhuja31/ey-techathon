@@ -10,6 +10,8 @@ from app.agents.workers.patent_agent import PatentLandscapeWorker
 from app.agents.workers.clinical_agent import ClinicalTrialsWorker
 from app.agents.workers.web_intel_agent import WebIntelligenceWorker
 from app.agents.workers.report_agent import ReportGeneratorWorker
+from app.agents.workers.company_rag_agent import CompanyKnowledgeAgent
+from app.agents.workers.literature_agent import ScientificLiteratureAgent
 
 
 # Initialize worker instances
@@ -18,6 +20,20 @@ patent_worker = PatentLandscapeWorker()
 clinical_worker = ClinicalTrialsWorker()
 web_intel_worker = WebIntelligenceWorker()
 report_worker = ReportGeneratorWorker()
+company_rag_worker = CompanyKnowledgeAgent()
+literature_worker = ScientificLiteratureAgent()
+
+# Keywords that indicate company-specific queries
+COMPANY_KEYWORDS = [
+    "company data", "our documents", "internal", "uploaded",
+    "company files", "our files", "my documents", "proprietary"
+]
+
+
+def is_company_specific_query(query: str) -> bool:
+    """Check if the query is asking for company-specific data."""
+    query_lower = query.lower()
+    return any(keyword in query_lower for keyword in COMPANY_KEYWORDS)
 
 
 async def intent_classifier(state: MasterState) -> Dict[str, Any]:
@@ -26,8 +42,13 @@ async def intent_classifier(state: MasterState) -> Dict[str, Any]:
 
     This node analyzes the query to understand what the user wants
     and extracts relevant entities (molecules, diseases, etc.).
+    Also determines if this is a company-specific query requiring RAG.
     """
     query = state["query"].lower()
+    options = state.get("options", {})
+
+    # Check if company-specific query
+    is_company_query = is_company_specific_query(query) or options.get("include_company_data", False)
 
     # Simple intent classification (in production, use LLM)
     intent = "drug_research"  # Default intent
@@ -40,11 +61,14 @@ async def intent_classifier(state: MasterState) -> Dict[str, Any]:
         intent = "market_analysis"
     elif "compare" in query:
         intent = "comparison"
+    elif "literature" in query or "papers" in query or "research" in query:
+        intent = "literature_search"
 
     # Extract entities (simple keyword extraction)
     entities = []
     keywords = ["glp-1", "glp1", "semaglutide", "tirzepatide", "obesity",
-                "diabetes", "wegovy", "ozempic", "mounjaro", "rybelsus"]
+                "diabetes", "wegovy", "ozempic", "mounjaro", "rybelsus",
+                "metformin", "insulin", "cancer", "alzheimer"]
 
     for keyword in keywords:
         if keyword in query:
@@ -53,6 +77,7 @@ async def intent_classifier(state: MasterState) -> Dict[str, Any]:
     return {
         "intent": intent,
         "entities": entities,
+        "is_company_query": is_company_query,
         "status": "processing",
         "progress": 10,
         "updated_at": datetime.utcnow().isoformat()
@@ -64,9 +89,11 @@ async def task_planner(state: MasterState) -> Dict[str, Any]:
     Plan subtasks based on intent and options.
 
     Creates a list of subtasks to be executed by worker agents.
+    Includes company RAG and literature agents when appropriate.
     """
     options = state.get("options", {})
     intent = state.get("intent", "drug_research")
+    is_company_query = state.get("is_company_query", False)
 
     subtasks = []
 
@@ -101,6 +128,24 @@ async def task_planner(state: MasterState) -> Dict[str, Any]:
             "worker_type": "web_intel",
             "description": "Gather news and sentiment data",
             "priority": 2
+        })
+
+    # Add literature search for research-focused queries
+    if options.get("include_literature", True) or intent == "literature_search":
+        subtasks.append({
+            "id": "task_literature",
+            "worker_type": "literature",
+            "description": "Search scientific literature and identify trends",
+            "priority": 2
+        })
+
+    # Add company RAG for company-specific queries
+    if is_company_query or options.get("include_company_data", False):
+        subtasks.append({
+            "id": "task_company_rag",
+            "worker_type": "company_rag",
+            "description": "Search and analyze company documents",
+            "priority": 1
         })
 
     # Always add report generation
@@ -153,7 +198,27 @@ async def web_intel_node(state: MasterState) -> Dict[str, Any]:
     result = await web_intel_worker.run(state)
     return {
         **result,
+        "progress": 70,
+        "updated_at": datetime.utcnow().isoformat()
+    }
+
+
+async def literature_node(state: MasterState) -> Dict[str, Any]:
+    """Execute Scientific Literature worker."""
+    result = await literature_worker.run(state)
+    return {
+        **result,
         "progress": 80,
+        "updated_at": datetime.utcnow().isoformat()
+    }
+
+
+async def company_rag_node(state: MasterState) -> Dict[str, Any]:
+    """Execute Company Knowledge RAG worker."""
+    result = await company_rag_worker.run(state)
+    return {
+        **result,
+        "progress": 85,
         "updated_at": datetime.utcnow().isoformat()
     }
 
@@ -207,7 +272,11 @@ def should_run_workers(state: MasterState) -> Literal["parallel_workers", "synth
             if output.get("status") == "completed":
                 completed_workers.add(output.get("worker_name"))
 
-    expected_workers = {"IQVIA Insights", "Patent Landscape", "Clinical Trials", "Web Intelligence"}
+    # All possible workers
+    expected_workers = {
+        "IQVIA Insights", "Patent Landscape", "Clinical Trials",
+        "Web Intelligence", "Scientific Literature", "Company Knowledge"
+    }
     if completed_workers >= expected_workers:
         return "synthesizer"
 
@@ -220,7 +289,7 @@ def create_drug_discovery_graph() -> StateGraph:
 
     Architecture:
     1. Intent Classifier -> Task Planner
-    2. Task Planner -> Parallel Workers (IQVIA, Patent, Clinical, Web Intel)
+    2. Task Planner -> Workers (IQVIA, Patent, Clinical, Web Intel, Literature, Company RAG)
     3. All Workers -> Synthesizer
     4. Synthesizer -> END
 
@@ -236,6 +305,8 @@ def create_drug_discovery_graph() -> StateGraph:
     graph.add_node("patent_worker", patent_node)
     graph.add_node("clinical_worker", clinical_node)
     graph.add_node("web_intel_worker", web_intel_node)
+    graph.add_node("literature_worker", literature_node)
+    graph.add_node("company_rag_worker", company_rag_node)
     graph.add_node("synthesizer", synthesizer_node)
 
     # Set entry point
@@ -247,7 +318,9 @@ def create_drug_discovery_graph() -> StateGraph:
     graph.add_edge("iqvia_worker", "patent_worker")
     graph.add_edge("patent_worker", "clinical_worker")
     graph.add_edge("clinical_worker", "web_intel_worker")
-    graph.add_edge("web_intel_worker", "synthesizer")
+    graph.add_edge("web_intel_worker", "literature_worker")
+    graph.add_edge("literature_worker", "company_rag_worker")
+    graph.add_edge("company_rag_worker", "synthesizer")
     graph.add_edge("synthesizer", END)
 
     return graph

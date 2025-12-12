@@ -93,6 +93,44 @@ class ReportGeneratorWorker(BaseWorker):
                 ]
             }
 
+        # Metformin/diabetes specific mind map
+        if "metformin" in query_lower or "diabetes" in query_lower:
+            return {
+                "nodes": [
+                    # Disease nodes (pink)
+                    {"id": "disease_t2d", "label": "Type 2 Diabetes", "type": "disease", "x": 400, "y": 100},
+                    {"id": "disease_prediabetes", "label": "Prediabetes", "type": "disease", "x": 400, "y": 300},
+
+                    # Molecule nodes (purple/blue)
+                    {"id": "mol_metformin", "label": "Metformin", "type": "molecule", "x": 250, "y": 200},
+                    {"id": "mol_dapagliflozin", "label": "Dapagliflozin", "type": "molecule", "x": 550, "y": 100},
+                    {"id": "mol_sitagliptin", "label": "Sitagliptin", "type": "molecule", "x": 550, "y": 300},
+
+                    # Product nodes (yellow)
+                    {"id": "prod_glucophage", "label": "Glucophage", "type": "product", "x": 100, "y": 120,
+                     "data": {"match_score": 95, "manufacturer": "Bristol-Myers Squibb"}},
+                    {"id": "prod_glucophage_xr", "label": "Glucophage XR", "type": "product", "x": 100, "y": 200,
+                     "data": {"match_score": 92, "manufacturer": "Bristol-Myers Squibb"}},
+                    {"id": "prod_xigduo", "label": "Xigduo XR", "type": "product", "x": 100, "y": 280,
+                     "data": {"match_score": 88, "manufacturer": "AstraZeneca"}},
+                    {"id": "prod_janumet", "label": "Janumet", "type": "product", "x": 700, "y": 200,
+                     "data": {"match_score": 85, "manufacturer": "Merck"}},
+                ],
+                "edges": [
+                    # Disease to Molecule connections
+                    {"id": "e1", "source": "disease_t2d", "target": "mol_metformin", "label": "first_line"},
+                    {"id": "e2", "source": "disease_prediabetes", "target": "mol_metformin", "label": "prevention"},
+                    {"id": "e3", "source": "disease_t2d", "target": "mol_dapagliflozin", "label": "add_on"},
+                    {"id": "e4", "source": "disease_t2d", "target": "mol_sitagliptin", "label": "add_on"},
+
+                    # Molecule to Product connections
+                    {"id": "e5", "source": "mol_metformin", "target": "prod_glucophage", "label": "formulated_as"},
+                    {"id": "e6", "source": "mol_metformin", "target": "prod_glucophage_xr", "label": "formulated_as"},
+                    {"id": "e7", "source": "mol_metformin", "target": "prod_xigduo", "label": "combination"},
+                    {"id": "e8", "source": "mol_metformin", "target": "prod_janumet", "label": "combination"},
+                ]
+            }
+
         # Generic mind map structure
         return {
             "nodes": [

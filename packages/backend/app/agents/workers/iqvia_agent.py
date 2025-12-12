@@ -94,12 +94,65 @@ class IQVIAInsightsWorker(BaseWorker):
                 }
             }
 
+        # Metformin/diabetes insights
+        if "metformin" in query or "diabetes" in query:
+            return {
+                "market_overview": {
+                    "segment": "Diabetes Therapeutics",
+                    "market_size_2024": "$72.3 billion",
+                    "cagr": "8.4%",
+                    "projected_2030": "$118.5 billion"
+                },
+                "top_products": [
+                    {
+                        "name": "Glucophage (Metformin)",
+                        "manufacturer": "Multiple (Generic)",
+                        "revenue_2024": "$3.2 billion",
+                        "market_share": "4.4%",
+                        "indication": "Type 2 Diabetes (First-line)"
+                    },
+                    {
+                        "name": "Jardiance",
+                        "manufacturer": "Boehringer Ingelheim / Eli Lilly",
+                        "revenue_2024": "$7.4 billion",
+                        "market_share": "10.2%",
+                        "indication": "Type 2 Diabetes, Heart Failure"
+                    },
+                    {
+                        "name": "Trulicity",
+                        "manufacturer": "Eli Lilly",
+                        "revenue_2024": "$6.5 billion",
+                        "market_share": "9.0%",
+                        "indication": "Type 2 Diabetes"
+                    },
+                    {
+                        "name": "Ozempic",
+                        "manufacturer": "Novo Nordisk",
+                        "revenue_2024": "$14.2 billion",
+                        "market_share": "19.6%",
+                        "indication": "Type 2 Diabetes"
+                    }
+                ],
+                "trends": [
+                    "GLP-1 agonists gaining market share from traditional therapies",
+                    "Metformin remains first-line despite newer agents",
+                    "Combination therapies increasing adoption",
+                    "Focus on cardiovascular and renal outcomes"
+                ],
+                "competitive_landscape": {
+                    "market_leaders": ["Novo Nordisk", "Eli Lilly", "Boehringer Ingelheim"],
+                    "emerging_players": ["Pfizer", "AstraZeneca"],
+                    "pipeline_activity": "Moderate - Focus on combinations and new mechanisms"
+                }
+            }
+
         # Generic insights for other queries
         return {
             "market_overview": {
                 "segment": "Pharmaceutical Market Analysis",
-                "status": "Data available upon specific query",
-                "note": "Provide molecule or therapeutic area for detailed insights"
+                "market_size_2024": "$1.48 trillion (Global)",
+                "cagr": "6.2%",
+                "projected_2030": "$2.13 trillion"
             },
             "top_products": [],
             "trends": [
@@ -108,6 +161,7 @@ class IQVIAInsightsWorker(BaseWorker):
                 "Digital health integration"
             ],
             "competitive_landscape": {
-                "note": "Specify therapeutic area for competitor analysis"
+                "market_leaders": ["Pfizer", "Roche", "Johnson & Johnson", "Novartis"],
+                "note": "Specify therapeutic area for detailed competitor analysis"
             }
         }

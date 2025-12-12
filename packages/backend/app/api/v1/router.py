@@ -1,7 +1,7 @@
 """API v1 Router - aggregates all endpoint routers."""
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import chat, jobs, patents, graph
+from app.api.v1.endpoints import chat, jobs, patents, graph, stream, documents
 
 api_router = APIRouter()
 
@@ -28,4 +28,16 @@ api_router.include_router(
     graph.router,
     prefix="/graph",
     tags=["Graph"]
+)
+
+api_router.include_router(
+    stream.router,
+    prefix="/stream",
+    tags=["Stream"]
+)
+
+api_router.include_router(
+    documents.router,
+    prefix="/documents",
+    tags=["Documents"]
 )

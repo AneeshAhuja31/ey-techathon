@@ -46,7 +46,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           "max-w-[70%] rounded-2xl px-4 py-3",
           isUser
             ? "bg-accent-purple text-white rounded-tr-sm"
-            : "bg-background-card border border-border-default text-text-primary rounded-tl-sm"
+            : "bg-background-card border border-border-default text-text-primary rounded-tl-sm shadow-sm"
         )}
       >
         <p className="text-sm whitespace-pre-wrap">{message.content}</p>

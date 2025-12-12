@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useEffect } from "react";
 import {
   ReactFlow,
   MiniMap,
@@ -15,7 +15,7 @@ import {
 import "@xyflow/react/dist/style.css";
 
 import { DiseaseNode, MoleculeNode, ProductNode } from "./CustomNodes";
-import { mockMindMapData } from "@/lib/mock-data";
+import { hierarchicalMindMapData, mockMindMapData } from "@/lib/mock-data";
 import { getLayoutedElements } from "@/lib/layout";
 
 const nodeTypes = {
@@ -25,16 +25,168 @@ const nodeTypes = {
 };
 
 export function MindMapCanvas() {
-  const { nodes: layoutedNodes, edges: layoutedEdges } = useMemo(() => {
+  // Start with the base mock data
+  const { nodes: initialNodes, edges: initialEdges } = useMemo(() => {
     return getLayoutedElements(mockMindMapData.nodes, mockMindMapData.edges);
   }, []);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState(layoutedNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(layoutedEdges);
+  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+
+  // Handle node expansion
+  const handleNodeExpand = useCallback((nodeId: string) => {
+    setNodes((currentNodes) => {
+      // Find the node being expanded
+      const targetNode = currentNodes.find((n) => n.id === nodeId);
+      if (!targetNode) return currentNodes;
+
+      const isCurrentlyExpanded = targetNode.data.isExpanded;
+      const childIds = targetNode.data.childIds as string[] | undefined;
+
+      if (!childIds || childIds.length === 0) return currentNodes;
+
+      // Toggle expansion state
+      const newIsExpanded = !isCurrentlyExpanded;
+
+      // Get all descendant node IDs (children, grandchildren, etc.)
+      const getDescendants = (ids: string[]): string[] => {
+        const descendants: string[] = [];
+        ids.forEach((id) => {
+          descendants.push(id);
+          const node = hierarchicalMindMapData.nodes.find((n) => n.id === id);
+          if (node?.childIds && node.childIds.length > 0) {
+            // Only add grandchildren if the child node is expanded
+            const childNode = currentNodes.find((n) => n.id === id);
+            if (childNode?.data.isExpanded) {
+              descendants.push(...getDescendants(node.childIds));
+            }
+          }
+        });
+        return descendants;
+      };
+
+      if (newIsExpanded) {
+        // Expanding: Add child nodes that don't exist yet
+        const existingIds = new Set(currentNodes.map((n) => n.id));
+        const newNodes: Node[] = [];
+
+        childIds.forEach((childId) => {
+          if (!existingIds.has(childId)) {
+            const childData = hierarchicalMindMapData.nodes.find(
+              (n) => n.id === childId
+            );
+            if (childData) {
+              newNodes.push({
+                id: childData.id,
+                type: childData.type,
+                position: { x: 0, y: 0 },
+                data: {
+                  label: childData.label,
+                  score: childData.score,
+                  isExpanded: false,
+                  childCount: childData.childIds?.length || 0,
+                  parentId: childData.parentId,
+                  childIds: childData.childIds,
+                  onExpand: handleNodeExpand,
+                },
+              });
+            }
+          }
+        });
+
+        // Update the target node's expanded state
+        const updatedNodes = currentNodes.map((node) => {
+          if (node.id === nodeId) {
+            return {
+              ...node,
+              data: { ...node.data, isExpanded: true },
+            };
+          }
+          return node;
+        });
+
+        // Add new nodes and relayout
+        const allNodes = [...updatedNodes, ...newNodes];
+
+        // Add new edges for the children
+        const newEdgeIds = new Set(edges.map((e) => e.id));
+        const newEdges = hierarchicalMindMapData.edges
+          .filter(
+            (e) =>
+              e.source === nodeId &&
+              childIds.includes(e.target) &&
+              !newEdgeIds.has(e.id)
+          )
+          .map((e) => ({
+            id: e.id,
+            source: e.source,
+            target: e.target,
+            animated: true,
+          }));
+
+        if (newEdges.length > 0) {
+          setEdges((currentEdges) => [...currentEdges, ...newEdges]);
+        }
+
+        // Relayout all nodes
+        const { nodes: layoutedNodes } = getLayoutedElements(allNodes, [
+          ...edges,
+          ...newEdges,
+        ]);
+        return layoutedNodes;
+      } else {
+        // Collapsing: Hide all descendants
+        const descendantIds = new Set(getDescendants(childIds));
+
+        // Update the target node's expanded state and remove descendants
+        const updatedNodes = currentNodes
+          .filter((node) => !descendantIds.has(node.id))
+          .map((node) => {
+            if (node.id === nodeId) {
+              return {
+                ...node,
+                data: { ...node.data, isExpanded: false },
+              };
+            }
+            return node;
+          });
+
+        // Remove edges connected to hidden nodes
+        setEdges((currentEdges) =>
+          currentEdges.filter(
+            (e) => !descendantIds.has(e.source) && !descendantIds.has(e.target)
+          )
+        );
+
+        // Relayout remaining nodes
+        const remainingEdges = edges.filter(
+          (e) => !descendantIds.has(e.source) && !descendantIds.has(e.target)
+        );
+        const { nodes: layoutedNodes } = getLayoutedElements(
+          updatedNodes,
+          remainingEdges
+        );
+        return layoutedNodes;
+      }
+    });
+  }, [edges, setEdges]);
+
+  // Inject the expand handler into all nodes
+  useEffect(() => {
+    setNodes((currentNodes) =>
+      currentNodes.map((node) => ({
+        ...node,
+        data: {
+          ...node.data,
+          onExpand: handleNodeExpand,
+        },
+      }))
+    );
+  }, [handleNodeExpand, setNodes]);
 
   const onNodeClick = useCallback((event: React.MouseEvent, node: Node) => {
     console.log("Node clicked:", node);
-    // In real app, show details panel
+    // Could show details panel here
   }, []);
 
   return (

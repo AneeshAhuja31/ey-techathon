@@ -3,9 +3,13 @@
 import { useRef, useEffect, useCallback, useState } from "react";
 import { useChatStore } from "@/store/chatStore";
 import { useJobStore } from "@/store/jobStore";
+import { useSidebarStore } from "@/store/sidebarStore";
+import { useDocumentStore } from "@/store/documentStore";
 import { MessageBubble } from "./MessageBubble";
 import { ChatInput } from "./ChatInput";
 import { JobStatusCard } from "./JobStatusCard";
+import { LangGraphInline } from "@/components/langgraph";
+import { useJobStream, NodeState } from "@/hooks/useSSE";
 import { chatApi, jobsApi } from "@/lib/api";
 
 const POLL_INTERVAL = 2000;
@@ -15,17 +19,103 @@ const RESEARCH_KEYWORDS = [
   "research", "analyze", "comprehensive", "deep dive", "patent search",
   "market analysis", "clinical trials", "find patents", "investigate",
   "full analysis", "detailed study", "landscape analysis", "competitive analysis",
-  "start analysis", "run analysis", "begin research", "yes", "confirm", "start"
+  "start analysis", "run analysis", "begin research"
+];
+
+// Keywords that indicate a company-specific query
+const COMPANY_KEYWORDS = [
+  "company data", "our documents", "our data", "internal", "uploaded",
+  "my documents", "company documents", "proprietary", "internal data",
+  "our files", "uploaded files", "company files"
 ];
 
 export function ChatContainer() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const [pendingResearchQuery, setPendingResearchQuery] = useState<string | null>(null);
+  const [streamingJobId, setStreamingJobId] = useState<string | null>(null);
+  const [sseNodes, setSseNodes] = useState<NodeState[]>([]);
   const { messages, isLoading, currentJobId, addMessage, setLoading, setCurrentJobId } = useChatStore();
   const { jobs, addJob, updateJob, updateWorkerStatus } = useJobStore();
+  const { documents } = useDocumentStore();
 
   const currentJob = jobs.find((job) => job.id === currentJobId);
+  const hasDocuments = documents.some(d => d.status === "ready");
+
+  // Sidebar store for mind map panel
+  const { setPipelineNodes, setMindMapData, openMindMap, clearPipelineNodes } = useSidebarStore();
+
+  // Use SSE for real-time updates when available
+  const {
+    nodes: streamNodes,
+    progress: streamProgress,
+    status: streamStatus,
+    isComplete: streamComplete,
+    isConnected,
+  } = useJobStream(streamingJobId, {
+    onProgress: (progress, status) => {
+      if (streamingJobId) {
+        updateJob(streamingJobId, { progress, status: status as "running" | "completed" | "failed" });
+      }
+    },
+    onNodeUpdate: (node) => {
+      setSseNodes((prev) => {
+        const existing = prev.findIndex((n) => n.nodeId === node.nodeId);
+        let next: NodeState[];
+        if (existing >= 0) {
+          next = [...prev];
+          next[existing] = node;
+        } else {
+          next = [...prev, node];
+        }
+        // Also update sidebar store
+        setPipelineNodes(next);
+        return next;
+      });
+      // Also update job store for compatibility
+      if (streamingJobId) {
+        updateWorkerStatus(streamingJobId, node.nodeName, {
+          status: node.status,
+          progress: node.progress,
+        });
+      }
+    },
+    onComplete: (data) => {
+      if (streamingJobId) {
+        updateJob(streamingJobId, { status: "completed", progress: 100 });
+
+        // Only add completion message if there's a final report from backend
+        if (data.finalReport) {
+          const completionMessage = {
+            id: Date.now().toString(),
+            role: "assistant" as const,
+            content: data.finalReport,
+            timestamp: new Date().toISOString(),
+            jobId: streamingJobId,
+          };
+          addMessage(completionMessage);
+        }
+
+        // Update sidebar with mind map data if available
+        if (data.mindMapData) {
+          setMindMapData(data.mindMapData as {
+            nodes: Array<{ id: string; label: string; type: string; data?: Record<string, unknown> }>;
+            edges: Array<{ id: string; source: string; target: string; label?: string }>;
+          });
+        }
+
+        setStreamingJobId(null);
+        setSseNodes([]);
+        clearPipelineNodes();
+      }
+    },
+    onError: (error) => {
+      console.error("SSE error:", error);
+      // Fall back to polling on SSE error
+      if (streamingJobId) {
+        setStreamingJobId(null);
+      }
+    },
+  });
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -39,6 +129,12 @@ export function ChatContainer() {
   const isResearchQuery = (message: string): boolean => {
     const messageLower = message.toLowerCase();
     return RESEARCH_KEYWORDS.some(keyword => messageLower.includes(keyword));
+  };
+
+  // Check if message is a company-specific query
+  const isCompanyQuery = (message: string): boolean => {
+    const messageLower = message.toLowerCase();
+    return COMPANY_KEYWORDS.some(keyword => messageLower.includes(keyword));
   };
 
   // Poll job status
@@ -73,16 +169,19 @@ export function ChatContainer() {
           pollIntervalRef.current = null;
         }
 
-        const completionMessage = {
-          id: Date.now().toString(),
-          role: "assistant" as const,
-          content: data.status === "completed"
-            ? `Analysis complete! I've gathered insights from market research, patents, clinical trials, and web intelligence. ${data.result?.summary || "Check the results below."}`
-            : "Unfortunately, the analysis encountered an error. Please try again.",
-          timestamp: new Date().toISOString(),
-          jobId,
-        };
-        addMessage(completionMessage);
+        // Only add message if there's actual content from backend
+        if (data.result?.summary || data.status === "failed") {
+          const completionMessage = {
+            id: Date.now().toString(),
+            role: "assistant" as const,
+            content: data.status === "completed" && data.result?.summary
+              ? data.result.summary
+              : "The analysis encountered an error. Please try again.",
+            timestamp: new Date().toISOString(),
+            jobId,
+          };
+          addMessage(completionMessage);
+        }
       }
     } catch (error) {
       console.error("Failed to poll job status:", error);
@@ -124,15 +223,7 @@ export function ChatContainer() {
         clearInterval(pollIntervalRef.current);
         pollIntervalRef.current = null;
       }
-
-      const completionMessage = {
-        id: Date.now().toString(),
-        role: "assistant" as const,
-        content: "Analysis complete! I've gathered comprehensive insights. The research covers market data from IQVIA, relevant patents, clinical trial outcomes, and the latest web intelligence.",
-        timestamp: new Date().toISOString(),
-        jobId,
-      };
-      addMessage(completionMessage);
+      // No canned message - let the progress UI and results speak for themselves
     }
   }, [jobs, updateJob, updateWorkerStatus, addMessage]);
 
@@ -152,13 +243,15 @@ export function ChatContainer() {
     };
   }, [currentJobId, currentJob?.status, pollJobStatus]);
 
-  // Start a research job
-  const startResearchJob = async (query: string) => {
+  // Start a research job with SSE streaming
+  const startResearchJob = async (query: string, includeCompanyData: boolean = false) => {
     try {
       const response = await chatApi.initiate(query, {
         include_patents: true,
         include_clinical_trials: true,
         include_market_data: true,
+        include_literature: true,
+        include_company_data: includeCompanyData,
       });
 
       const { job_id, status } = response.data;
@@ -171,24 +264,24 @@ export function ChatContainer() {
         progress: 0,
         startedAt: new Date().toISOString(),
         workers: [
-          { name: "Market Research", status: "running" as const, progress: 0 },
-          { name: "Patent Finder", status: "pending" as const, progress: 0 },
-          { name: "Clinical Data", status: "pending" as const, progress: 0 },
-          { name: "Web Intelligence", status: "pending" as const, progress: 0 },
+          { name: "Market Research", status: "pending" as const, progress: 0 },
+          { name: "Patent Search", status: "pending" as const, progress: 0 },
+          { name: "Clinical Trials", status: "pending" as const, progress: 0 },
+          { name: "Web Intel", status: "pending" as const, progress: 0 },
+          { name: "Literature", status: "pending" as const, progress: 0 },
+          ...(includeCompanyData ? [{ name: "Company Data", status: "pending" as const, progress: 0 }] : []),
         ],
       };
 
       addJob(newJob);
       setCurrentJobId(job_id);
 
-      const assistantMessage = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant" as const,
-        content: `I've started the research analysis for: "${query}". Our specialized AI agents are now gathering market data, patents, clinical trials, and web intelligence. Track the progress below.`,
-        timestamp: new Date().toISOString(),
-        jobId: job_id,
-      };
-      addMessage(assistantMessage);
+      // Start SSE streaming for real-time updates
+      setStreamingJobId(job_id);
+      setSseNodes([]);
+      clearPipelineNodes();
+      openMindMap(); // Auto-open the sidebar when analysis starts
+      // No canned message - the progress UI shows the analysis is running
 
     } catch (error) {
       console.log("Backend unavailable for research job, using mock mode");
@@ -203,23 +296,16 @@ export function ChatContainer() {
         startedAt: new Date().toISOString(),
         workers: [
           { name: "Market Research", status: "running" as const, progress: 0 },
-          { name: "Patent Finder", status: "pending" as const, progress: 0 },
-          { name: "Clinical Data", status: "pending" as const, progress: 0 },
-          { name: "Web Intelligence", status: "pending" as const, progress: 0 },
+          { name: "Patent Search", status: "pending" as const, progress: 0 },
+          { name: "Clinical Trials", status: "pending" as const, progress: 0 },
+          { name: "Web Intel", status: "pending" as const, progress: 0 },
+          { name: "Literature", status: "pending" as const, progress: 0 },
         ],
       };
 
       addJob(newJob);
       setCurrentJobId(newJobId);
-
-      const assistantMessage = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant" as const,
-        content: `I've started the research analysis for: "${query}". Our specialized AI agents are now gathering data. (Running in demo mode)`,
-        timestamp: new Date().toISOString(),
-        jobId: newJobId,
-      };
-      addMessage(assistantMessage);
+      // No canned message - the progress UI shows the analysis is running
     }
   };
 
@@ -234,10 +320,24 @@ export function ChatContainer() {
     addMessage(userMessage);
     setLoading(true);
 
-    // Check if user is confirming a pending research query
-    if (pendingResearchQuery && (content.toLowerCase() === "yes" || content.toLowerCase() === "confirm" || content.toLowerCase() === "start")) {
-      await startResearchJob(pendingResearchQuery);
-      setPendingResearchQuery(null);
+    // Check if this is a company-specific query without documents
+    const wantsCompanyData = isCompanyQuery(content);
+    if (wantsCompanyData && !hasDocuments) {
+      const promptMessage = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant" as const,
+        content: `I'd love to help analyze your company data, but you haven't uploaded any documents yet.
+
+**To enable company-specific analysis:**
+1. Click the 📎 paperclip icon in the chat input
+2. Upload your company documents (PDF, DOCX, XLSX, TXT supported)
+3. Wait for the documents to be processed
+4. Then ask your question again!
+
+Your documents will be securely vectorized and used for RAG-based analysis alongside our market, patent, and clinical trial data.`,
+        timestamp: new Date().toISOString(),
+      };
+      addMessage(promptMessage);
       setLoading(false);
       return;
     }
@@ -251,31 +351,51 @@ export function ChatContainer() {
 
       // Try simple chat first
       const response = await chatApi.simple(content, conversationHistory);
-      const { response: aiResponse, is_research_query } = response.data;
+      const { response: aiResponse, is_research_query, is_company_query, requires_documents } = response.data;
 
-      // If it's a research query, store it and wait for confirmation
-      if (is_research_query) {
-        setPendingResearchQuery(content);
+      // If backend says we need documents for company query
+      if (is_company_query && requires_documents && !hasDocuments) {
+        const promptMessage = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant" as const,
+          content: `I noticed you're interested in company-specific analysis. Please upload your company documents first using the 📎 button below.
+
+Once uploaded, I can include your proprietary data in the analysis alongside market research, patents, and clinical trial data.`,
+          timestamp: new Date().toISOString(),
+        };
+        addMessage(promptMessage);
+        setLoading(false);
+        return;
       }
 
-      const assistantMessage = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant" as const,
-        content: aiResponse,
-        timestamp: new Date().toISOString(),
-      };
-      addMessage(assistantMessage);
+      // If it's a research query, start the job directly (no confirmation needed)
+      if (is_research_query) {
+        await startResearchJob(content, (is_company_query || wantsCompanyData) && hasDocuments);
+        setLoading(false);
+        return;
+      }
+
+      // Only add message if there's actual content
+      if (aiResponse) {
+        const assistantMessage = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant" as const,
+          content: aiResponse,
+          timestamp: new Date().toISOString(),
+        };
+        addMessage(assistantMessage);
+      }
 
     } catch (error) {
       console.log("Backend unavailable, using fallback response");
 
       // Check if this looks like a research query
       if (isResearchQuery(content)) {
-        // Start research job directly
-        await startResearchJob(content);
+        // Start research job directly (include company data if available and requested)
+        await startResearchJob(content, wantsCompanyData && hasDocuments);
       } else {
         // Provide a fallback response for regular questions
-        const fallbackResponse = getFallbackResponse(content);
+        const fallbackResponse = getFallbackResponse(content, wantsCompanyData, hasDocuments);
         const assistantMessage = {
           id: (Date.now() + 1).toString(),
           role: "assistant" as const,
@@ -297,12 +417,25 @@ export function ChatContainer() {
           <MessageBubble key={message.id} message={message} />
         ))}
 
-        {/* Show job status card if there's an active job */}
-        {currentJob && currentJob.status === "running" && (
+        {/* Show LangGraph visualization for SSE streaming */}
+        {streamingJobId && sseNodes.length > 0 && (
+          <LangGraphInline nodes={sseNodes} className="my-4" />
+        )}
+
+        {/* Show job status card if there's an active job (fallback for non-SSE) */}
+        {currentJob && currentJob.status === "running" && !streamingJobId && (
           <JobStatusCard job={currentJob} />
         )}
 
-        {isLoading && (
+        {/* SSE connection indicator */}
+        {streamingJobId && isConnected && (
+          <div className="flex items-center gap-2 text-accent-cyan text-sm">
+            <div className="w-2 h-2 rounded-full bg-accent-cyan animate-pulse" />
+            <span>Live streaming analysis updates...</span>
+          </div>
+        )}
+
+        {isLoading && !streamingJobId && (
           <div className="flex items-center gap-2 text-text-muted">
             <div className="flex gap-1">
               <span className="w-2 h-2 bg-accent-cyan rounded-full animate-bounce" />
@@ -317,16 +450,30 @@ export function ChatContainer() {
       </div>
 
       {/* Input */}
-      <ChatInput onSend={handleSendMessage} disabled={isLoading} />
+      <ChatInput onSend={handleSendMessage} disabled={isLoading || !!streamingJobId} />
     </div>
   );
 }
 
 // Fallback responses when backend is unavailable
-function getFallbackResponse(message: string): string {
+function getFallbackResponse(message: string, isCompanyQuery: boolean = false, hasDocuments: boolean = false): string {
   const messageLower = message.toLowerCase();
 
+  // Handle company-specific queries
+  if (isCompanyQuery && !hasDocuments) {
+    return `I'd love to help with your company-specific query, but you haven't uploaded any documents yet.
+
+**To enable company data analysis:**
+1. Click the 📎 paperclip icon below
+2. Upload your company documents (PDF, DOCX, XLSX, TXT)
+3. Wait for processing to complete
+4. Then ask your question again
+
+Once uploaded, I can combine your proprietary data with market research, patents, and clinical trials!`;
+  }
+
   if (messageLower.includes("glp-1") || messageLower.includes("glp1")) {
+    const companyAddition = hasDocuments ? "\n\nI can also include your company documents in the analysis!" : "";
     return `GLP-1 (Glucagon-like peptide-1) is an incretin hormone crucial for glucose metabolism.
 
 **Key GLP-1 Medications:**
@@ -335,7 +482,7 @@ function getFallbackResponse(message: string): string {
 - **Rybelsus** (oral semaglutide) - for diabetes
 - **Mounjaro** (tirzepatide) - dual GIP/GLP-1 agonist
 
-Would you like me to run a comprehensive research analysis? Just say "research GLP-1 agonists".`;
+Would you like me to run a comprehensive research analysis? Just say "research GLP-1 agonists".${companyAddition}`;
   }
 
   if (messageLower.includes("semaglutide")) {
@@ -351,6 +498,9 @@ Say "research semaglutide" for a detailed analysis.`;
   }
 
   if (messageLower.includes("hello") || messageLower.includes("hi") || messageLower.includes("hey")) {
+    const docStatus = hasDocuments
+      ? "\n\n**Company Documents:** Ready for analysis!"
+      : "\n\n**Tip:** Upload company documents using 📎 to enable proprietary data analysis.";
     return `Hello! I'm DrugAI, your pharmaceutical research assistant.
 
 I can help with:
@@ -358,8 +508,9 @@ I can help with:
 - **Market Analysis** - Industry trends and competitive landscape
 - **Patent Intelligence** - IP landscape and FTO analysis
 - **Clinical Trials** - Trial data and regulatory insights
+- **Company Data** - Analysis of your uploaded documents (RAG)
 
-Ask me anything, or say "research [topic]" to start a comprehensive analysis!`;
+Ask me anything, or say "research [topic]" to start a comprehensive analysis!${docStatus}`;
   }
 
   if (messageLower.includes("help") || messageLower.includes("what can you do")) {
@@ -375,12 +526,19 @@ Ask me anything, or say "research [topic]" to start a comprehensive analysis!`;
 
 **Start Research:**
 Say "research [topic]" to deploy AI agents for:
-- Market intelligence
-- Patent landscape analysis
+- Market intelligence (IQVIA data)
+- Patent landscape analysis (Google Patents)
 - Clinical trial summaries
+- Scientific literature (PubMed)
 - Web intelligence
+${hasDocuments ? "- Company document analysis (RAG)" : ""}
 
-Example: "Research GLP-1 agonists for obesity"`;
+**Company Data:**
+${hasDocuments
+  ? "Your documents are ready! Include 'company data' in your query to analyze them."
+  : "Upload documents with 📎 to enable company-specific analysis."}
+
+Example: "Research GLP-1 agonists for obesity${hasDocuments ? " using company data" : ""}"`;
   }
 
   return `I'm DrugAI, specialized in drug discovery and pharmaceutical research.
@@ -390,8 +548,9 @@ Ask me about:
 - Patent landscapes
 - Clinical trials
 - Market analysis
+${hasDocuments ? "- Your company documents" : ""}
 
 Or say "research [topic]" to start a comprehensive analysis with our AI agents.
 
-What would you like to know?`;
+${!hasDocuments ? "**Tip:** Upload company documents with 📎 for proprietary data analysis.\n\n" : ""}What would you like to know?`;
 }

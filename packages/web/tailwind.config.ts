@@ -9,31 +9,35 @@ const config: Config = {
     extend: {
       colors: {
         background: {
-          primary: "#0D0D0D",
-          secondary: "#1A1A1A",
-          tertiary: "#262626",
-          card: "#1E1E1E",
+          primary: "#FFFFFF",
+          secondary: "#F9FAFB",
+          tertiary: "#F3F4F6",
+          card: "#FFFFFF",
         },
         accent: {
-          cyan: "#00D4FF",
-          blue: "#0066FF",
+          cyan: "#0EA5E9",
+          blue: "#3B82F6",
           purple: "#8B5CF6",
           green: "#10B981",
         },
         node: {
           disease: "#EC4899",
           molecule: "#8B5CF6",
-          product: "#FBBF24",
+          product: "#F59E0B",
         },
         border: {
-          default: "#333333",
-          hover: "#444444",
+          default: "#E5E7EB",
+          hover: "#D1D5DB",
         },
         text: {
-          primary: "#FFFFFF",
-          secondary: "#A0A0A0",
-          muted: "#666666",
+          primary: "#111827",
+          secondary: "#6B7280",
+          muted: "#9CA3AF",
         },
+      },
+      boxShadow: {
+        'card': '0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1)',
+        'card-hover': '0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)',
       },
     },
   },

@@ -1,9 +1,12 @@
-"""Chat initiation endpoint."""
+"""Chat initiation endpoint with dual query mode detection."""
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
 from openai import OpenAI
 
-from app.db.database import get_db
+from app.db.database import get_db, AsyncSessionLocal
 from app.schemas.chat import (
     ChatInitiateRequest,
     ChatInitiateResponse,
@@ -11,6 +14,8 @@ from app.schemas.chat import (
     SimpleChatResponse,
 )
 from app.services.job_service import JobService
+from app.services.vector_store import get_vector_store
+from app.models.document import Document
 from app.core.config import settings
 
 router = APIRouter()
@@ -37,6 +42,13 @@ RESEARCH_KEYWORDS = [
     "start analysis", "run analysis", "begin research"
 ]
 
+# Keywords that indicate company-specific data is requested
+COMPANY_KEYWORDS = [
+    "company data", "our documents", "internal", "uploaded",
+    "company files", "our files", "my documents", "proprietary",
+    "from our", "in our", "company's", "organization"
+]
+
 
 def is_research_query(message: str) -> bool:
     """Determine if the message is requesting a research job."""
@@ -44,23 +56,119 @@ def is_research_query(message: str) -> bool:
     return any(keyword in message_lower for keyword in RESEARCH_KEYWORDS)
 
 
+def is_company_specific_query(message: str) -> bool:
+    """Determine if the message is asking for company-specific data."""
+    message_lower = message.lower()
+    return any(keyword in message_lower for keyword in COMPANY_KEYWORDS)
+
+
 @router.post("/simple", response_model=SimpleChatResponse)
 async def simple_chat(request: SimpleChatRequest):
     """
-    Simple chat endpoint for regular questions.
+    Simple chat endpoint with dual query mode detection.
+
+    Query Modes:
+    1. General Mode: Uses OpenAI for simple questions (default)
+    2. Research Mode: Triggers agentic pipeline for comprehensive analysis
+    3. Company-Specific Mode: Checks for documents, prompts upload if none
 
     This endpoint uses OpenAI to answer general questions about
     drug discovery, pharmaceuticals, and related topics.
     """
     try:
-        # Check if this should be a research query
+        # Check for company-specific query first
+        if is_company_specific_query(request.message):
+            # Check database directly for ready documents (more reliable than Qdrant search)
+            has_documents = False
+            try:
+                async with AsyncSessionLocal() as db:
+                    result = await db.execute(
+                        select(func.count(Document.id)).where(Document.status == "ready")
+                    )
+                    doc_count = result.scalar() or 0
+                    has_documents = doc_count > 0
+            except Exception as e:
+                print(f"Error checking documents: {e}")
+                has_documents = False
+
+            if not has_documents:
+                return SimpleChatResponse(
+                    response="I'd love to help analyze your company data! However, I don't see any uploaded documents yet. Please upload your company documents (PDF) using the upload button, and then I can search and analyze your proprietary information.",
+                    is_research_query=False,
+                    requires_documents=True
+                )
+
+            # Company-specific query with documents available - do RAG search and answer
+            vector_store = get_vector_store()
+            try:
+                # Search for relevant document chunks
+                search_results = await vector_store.search(
+                    query=request.message,
+                    limit=5,
+                    score_threshold=0.3
+                )
+
+                if search_results:
+                    # Build context from search results
+                    context_parts = []
+                    for i, result in enumerate(search_results, 1):
+                        context_parts.append(f"[Document {i}]: {result['text']}")
+                    context = "\n\n".join(context_parts)
+
+                    # Use OpenAI to answer based on document context
+                    client = OpenAI(api_key=settings.openai_api_key)
+
+                    rag_prompt = f"""Based on the following company documents, answer the user's question.
+
+COMPANY DOCUMENTS:
+{context}
+
+USER QUESTION: {request.message}
+
+Instructions:
+- Answer based ONLY on the information in the documents above
+- If the documents don't contain relevant information, say so
+- Be specific and cite which document the information comes from when possible
+- Keep the response concise and focused"""
+
+                    response = client.chat.completions.create(
+                        model=settings.llm_model,
+                        messages=[
+                            {"role": "system", "content": "You are a helpful assistant that answers questions based on company documents."},
+                            {"role": "user", "content": rag_prompt}
+                        ],
+                        max_tokens=1000,
+                        temperature=0.3,
+                    )
+
+                    ai_response = response.choices[0].message.content
+                    return SimpleChatResponse(
+                        response=ai_response,
+                        is_research_query=False,
+                        is_company_query=True
+                    )
+                else:
+                    return SimpleChatResponse(
+                        response="I searched your company documents but couldn't find information directly related to your question. Could you try rephrasing, or would you like me to run a comprehensive analysis that includes patents, clinical trials, and market data alongside your documents?",
+                        is_research_query=False,
+                        is_company_query=True
+                    )
+            except Exception as e:
+                print(f"RAG search error: {e}")
+                return SimpleChatResponse(
+                    response="I encountered an error searching your documents. Please try again or rephrase your question.",
+                    is_research_query=False,
+                    is_company_query=True
+                )
+
+        # Check if this should be a research query - return flag to start job immediately
         if is_research_query(request.message):
             return SimpleChatResponse(
-                response="It sounds like you want to conduct in-depth research. I can help with that! Would you like me to start a comprehensive analysis? This will deploy our specialized AI agents to gather market data, patents, clinical trials, and web intelligence. Just confirm and I'll start the research job.",
+                response="",  # No canned message - frontend will start job directly
                 is_research_query=True
             )
 
-        # Use OpenAI for regular chat
+        # Use OpenAI for regular chat (General Mode)
         if not settings.openai_api_key:
             # Fallback response if no API key
             return SimpleChatResponse(

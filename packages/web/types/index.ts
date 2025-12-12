@@ -47,6 +47,11 @@ export interface MindMapNode {
   label: string;
   score?: number;
   data?: Record<string, unknown>;
+  // Expandable node properties
+  isExpanded?: boolean;
+  childIds?: string[];
+  parentId?: string;
+  hidden?: boolean;
 }
 
 export interface MindMapEdge {

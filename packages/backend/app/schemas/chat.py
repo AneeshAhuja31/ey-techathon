@@ -9,6 +9,8 @@ class ChatOptions(BaseModel):
     include_clinical_trials: bool = Field(default=True, description="Include clinical trials data")
     include_market_data: bool = Field(default=True, description="Include market/IQVIA data")
     include_web_intel: bool = Field(default=True, description="Include web intelligence")
+    include_literature: bool = Field(default=True, description="Include scientific literature")
+    include_company_data: bool = Field(default=False, description="Include company documents (RAG)")
 
 
 class ChatInitiateRequest(BaseModel):
@@ -78,14 +80,18 @@ class SimpleChatRequest(BaseModel):
 
 
 class SimpleChatResponse(BaseModel):
-    """Response schema for simple chat."""
+    """Response schema for simple chat with dual query mode."""
     response: str = Field(..., description="AI response")
     is_research_query: bool = Field(default=False, description="Whether this should trigger a research job")
+    is_company_query: bool = Field(default=False, description="Whether this is a company-specific query")
+    requires_documents: bool = Field(default=False, description="Whether user needs to upload documents first")
 
     class Config:
         json_schema_extra = {
             "example": {
                 "response": "GLP-1 (Glucagon-like peptide-1) is a hormone...",
-                "is_research_query": False
+                "is_research_query": False,
+                "is_company_query": False,
+                "requires_documents": False
             }
         }

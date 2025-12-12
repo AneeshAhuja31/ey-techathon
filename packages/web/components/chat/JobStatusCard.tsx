@@ -10,7 +10,7 @@ interface JobStatusCardProps {
 
 export function JobStatusCard({ job }: JobStatusCardProps) {
   return (
-    <div className="bg-background-card border border-border-default rounded-xl p-4 max-w-md">
+    <div className="bg-background-card border border-border-default rounded-xl p-4 max-w-md shadow-sm">
       <div className="flex items-center justify-between mb-4">
         <h3 className="font-medium text-text-primary">Analysis Progress</h3>
         <span className="flex items-center gap-1.5 text-accent-cyan text-sm">

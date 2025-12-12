@@ -2,6 +2,7 @@
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
 python-multipart==0.0.6
+sse-starlette==1.8.2
 
 # Pydantic for data validation
 pydantic==2.5.3
@@ -12,11 +13,28 @@ sqlalchemy==2.0.25
 aiosqlite==0.19.0
 
 # LangChain and LangGraph for agent orchestration
-langchain==0.1.0
-langgraph==0.0.20
-langchain-openai==0.0.2
-langchain-anthropic==0.1.1
-langchain-community==0.0.13
+langchain>=0.2.0
+langgraph>=0.2.0
+langchain-openai>=0.1.0
+langchain-anthropic>=0.1.1
+langchain-community>=0.2.0
+
+# OpenAI
+openai>=1.0.0
+
+# Qdrant vector database
+qdrant-client>=1.7.0
+
+# Document processing
+pypdf>=3.0.0
+python-docx>=0.8.11
+openpyxl>=3.1.0
+
+# SerpAPI for Google Patents
+google-search-results>=2.4.2
+
+# Tavily for web search
+tavily-python>=0.3.0
 
 # Async support
 httpx==0.26.0

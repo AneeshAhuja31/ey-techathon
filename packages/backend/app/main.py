@@ -8,6 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.db.database import init_db
 from app.api.v1.router import api_router
+# Import models so they are registered with SQLAlchemy before init_db
+from app.models import Job, WorkerStatus, Patent, Molecule, Disease, Product, Document
 
 
 @asynccontextmanager
