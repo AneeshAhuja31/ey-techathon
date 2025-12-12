@@ -49,14 +49,18 @@ function ExpandButton({
 }
 
 export function DiseaseNode({ id, data, selected }: NodeProps<Node<NodeData>>) {
+  const hasChildren = data.childCount && data.childCount > 0;
+
   return (
     <div
+      onClick={() => hasChildren && data.onExpand?.(id)}
       className={cn(
         "px-4 py-3 rounded-xl border-2 bg-background-card min-w-[140px] transition-all",
         selected
           ? "border-node-disease shadow-lg shadow-node-disease/20"
           : "border-node-disease/50",
-        data.isExpanded && "ring-2 ring-node-disease/30"
+        data.isExpanded && "ring-2 ring-node-disease/30",
+        hasChildren && "cursor-pointer hover:shadow-lg hover:shadow-node-disease/10"
       )}
     >
       <Handle
@@ -86,14 +90,18 @@ export function DiseaseNode({ id, data, selected }: NodeProps<Node<NodeData>>) {
 }
 
 export function MoleculeNode({ id, data, selected }: NodeProps<Node<NodeData>>) {
+  const hasChildren = data.childCount && data.childCount > 0;
+
   return (
     <div
+      onClick={() => hasChildren && data.onExpand?.(id)}
       className={cn(
         "px-4 py-3 rounded-xl border-2 bg-background-card min-w-[140px] transition-all",
         selected
           ? "border-node-molecule shadow-lg shadow-node-molecule/20"
           : "border-node-molecule/50",
-        data.isExpanded && "ring-2 ring-node-molecule/30"
+        data.isExpanded && "ring-2 ring-node-molecule/30",
+        hasChildren && "cursor-pointer hover:shadow-lg hover:shadow-node-molecule/10"
       )}
     >
       <Handle
@@ -128,14 +136,18 @@ export function MoleculeNode({ id, data, selected }: NodeProps<Node<NodeData>>) 
 }
 
 export function ProductNode({ id, data, selected }: NodeProps<Node<NodeData>>) {
+  const hasChildren = data.childCount && data.childCount > 0;
+
   return (
     <div
+      onClick={() => hasChildren && data.onExpand?.(id)}
       className={cn(
         "px-4 py-3 rounded-xl border-2 bg-background-card min-w-[140px] transition-all",
         selected
           ? "border-node-product shadow-lg shadow-node-product/20"
           : "border-node-product/50",
-        data.isExpanded && "ring-2 ring-node-product/30"
+        data.isExpanded && "ring-2 ring-node-product/30",
+        hasChildren && "cursor-pointer hover:shadow-lg hover:shadow-node-product/10"
       )}
     >
       <Handle

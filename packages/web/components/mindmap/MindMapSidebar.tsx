@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { cn } from "@/lib/utils";
 import {
   X,
@@ -12,6 +12,20 @@ import {
 } from "lucide-react";
 import { LangGraphCanvas } from "@/components/langgraph";
 import { NodeState } from "@/hooks/useSSE";
+import {
+  ReactFlow,
+  MiniMap,
+  Controls,
+  Background,
+  BackgroundVariant,
+  Node,
+  Edge,
+  useNodesState,
+  useEdgesState,
+} from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
+import { DiseaseNode, MoleculeNode, ProductNode } from "./CustomNodes";
+import { getLayoutedElements } from "@/lib/layout";
 
 interface MindMapSidebarProps {
   isOpen: boolean;
@@ -186,90 +200,272 @@ export function MindMapSidebar({
   );
 }
 
-// Simple mind map view component
+// React Flow mind map visualization component with expand/collapse
+const nodeTypes = {
+  disease: DiseaseNode,
+  molecule: MoleculeNode,
+  product: ProductNode,
+};
+
+// Interface for backend node data
+interface BackendNode {
+  id: string;
+  label: string;
+  type: string;
+  parentId?: string;
+  childIds?: string[];
+  isExpanded?: boolean;
+  data?: Record<string, unknown>;
+}
+
+interface BackendEdge {
+  id: string;
+  source: string;
+  target: string;
+  label?: string;
+}
+
 function MindMapView({
   data,
 }: {
   data: {
-    nodes: Array<{
-      id: string;
-      label: string;
-      type: string;
-      data?: Record<string, unknown>;
-    }>;
-    edges: Array<{
-      id: string;
-      source: string;
-      target: string;
-      label?: string;
-    }>;
+    nodes: BackendNode[];
+    edges: BackendEdge[];
   };
 }) {
-  const typeColors: Record<string, string> = {
-    molecule: "bg-purple-100 text-purple-800 border border-purple-200",
-    disease: "bg-pink-100 text-pink-800 border border-pink-200",
-    product: "bg-amber-100 text-amber-800 border border-amber-200",
-    patent: "bg-blue-100 text-blue-800 border border-blue-200",
-    clinical: "bg-emerald-100 text-emerald-800 border border-emerald-200",
-    market: "bg-sky-100 text-sky-800 border border-sky-200",
-    default: "bg-gray-100 text-gray-800 border border-gray-200",
-  };
+  // Store all original data for expand/collapse
+  const allNodesRef = useRef<BackendNode[]>(data.nodes);
+  const allEdgesRef = useRef<BackendEdge[]>(data.edges);
 
-  // Group nodes by type
-  const nodesByType = data.nodes.reduce(
-    (acc, node) => {
-      const type = node.type || "default";
-      if (!acc[type]) acc[type] = [];
-      acc[type].push(node);
-      return acc;
-    },
-    {} as Record<string, typeof data.nodes>
-  );
+  // Update refs when data changes
+  useEffect(() => {
+    allNodesRef.current = data.nodes;
+    allEdgesRef.current = data.edges;
+  }, [data]);
+
+  // Calculate initial visible nodes (first 2 layers by default, then based on expansion)
+  const getVisibleNodesAndEdges = useCallback((
+    allNodes: BackendNode[],
+    allEdges: BackendEdge[],
+    expandedState: Map<string, boolean>
+  ) => {
+    // Find which nodes should be visible based on parent expansion state
+    const visibleNodeIds = new Set<string>();
+
+    // Get node depth (0 = root, 1 = first child layer, etc.)
+    const getNodeDepth = (nodeId: string, depth = 0): number => {
+      const node = allNodes.find(n => n.id === nodeId);
+      if (!node || !node.parentId) return depth;
+      return getNodeDepth(node.parentId, depth + 1);
+    };
+
+    // Add root nodes (no parent) and their visible children
+    const addVisibleNodes = (nodeId: string, depth: number = 0) => {
+      const node = allNodes.find(n => n.id === nodeId);
+      if (!node) return;
+
+      visibleNodeIds.add(nodeId);
+
+      // Check if this node should show children
+      // By default: show first 2 layers (depth 0 and 1)
+      // After that: only show if explicitly expanded
+      const isExpanded = expandedState.has(nodeId)
+        ? expandedState.get(nodeId)
+        : depth < 1; // Default: expand only root level (depth 0)
+
+      if (isExpanded && node.childIds) {
+        node.childIds.forEach(childId => addVisibleNodes(childId, depth + 1));
+      }
+    };
+
+    // Start from root nodes (no parentId)
+    allNodes
+      .filter(n => !n.parentId)
+      .forEach(n => addVisibleNodes(n.id, 0));
+
+    // Convert to React Flow format
+    const rfNodes: Node[] = allNodes
+      .filter(node => visibleNodeIds.has(node.id))
+      .map((node) => {
+        const nodeDepth = getNodeDepth(node.id);
+        // Determine if this node is expanded
+        const isNodeExpanded = expandedState.has(node.id)
+          ? expandedState.get(node.id)!
+          : nodeDepth < 1; // Default: expand only root level
+
+        return {
+          id: node.id,
+          type: node.type as "disease" | "molecule" | "product",
+          position: { x: 0, y: 0 },
+          data: {
+            label: node.label,
+            score: node.data?.match_score as number | undefined,
+            childCount: node.childIds?.length || 0,
+            childIds: node.childIds,
+            parentId: node.parentId,
+            isExpanded: isNodeExpanded,
+            ...node.data,
+          },
+        };
+      });
+
+    // Only include edges where both source and target are visible
+    const rfEdges: Edge[] = allEdges
+      .filter(e => visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target))
+      .map((edge) => ({
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        animated: true,
+      }));
+
+    return getLayoutedElements(rfNodes, rfEdges);
+  }, []);
+
+  // Track expanded state (empty by default, uses depth-based defaults)
+  const [expandedState, setExpandedState] = useState<Map<string, boolean>>(() => {
+    return new Map<string, boolean>();
+  });
+
+  // Calculate initial nodes and edges
+  const initialData = useMemo(() => {
+    return getVisibleNodesAndEdges(data.nodes, data.edges, expandedState);
+  }, [data, expandedState, getVisibleNodesAndEdges]);
+
+  const [nodes, setNodes, onNodesChange] = useNodesState(initialData.nodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initialData.edges);
+
+  // Get node depth helper (needs to be outside for handleNodeExpand)
+  const getNodeDepth = useCallback((nodeId: string): number => {
+    const findDepth = (id: string, depth: number): number => {
+      const node = allNodesRef.current.find(n => n.id === id);
+      if (!node || !node.parentId) return depth;
+      return findDepth(node.parentId, depth + 1);
+    };
+    return findDepth(nodeId, 0);
+  }, []);
+
+  // Handle node expansion
+  const handleNodeExpand = useCallback((nodeId: string) => {
+    setExpandedState(prev => {
+      const next = new Map(prev);
+      const nodeDepth = getNodeDepth(nodeId);
+      // Get current state: check map first, then use depth-based default
+      const currentState = prev.has(nodeId)
+        ? prev.get(nodeId)!
+        : nodeDepth < 1; // Default: depth 0 is expanded
+      next.set(nodeId, !currentState);
+
+      // Recalculate visible nodes
+      const { nodes: newNodes, edges: newEdges } = getVisibleNodesAndEdges(
+        allNodesRef.current,
+        allEdgesRef.current,
+        next
+      );
+
+      // Inject expand handler into all nodes
+      const nodesWithHandler = newNodes.map(node => ({
+        ...node,
+        data: {
+          ...node.data,
+          onExpand: handleNodeExpand,
+        },
+      }));
+
+      setNodes(nodesWithHandler);
+      setEdges(newEdges);
+
+      return next;
+    });
+  }, [getNodeDepth, getVisibleNodesAndEdges, setNodes, setEdges]);
+
+  // Inject expand handler into initial nodes
+  useEffect(() => {
+    setNodes(currentNodes =>
+      currentNodes.map(node => ({
+        ...node,
+        data: {
+          ...node.data,
+          onExpand: handleNodeExpand,
+        },
+      }))
+    );
+  }, [handleNodeExpand, setNodes]);
+
+  // Update when data changes from new research
+  useEffect(() => {
+    // Reset to empty state - let depth-based defaults apply
+    const newExpandedState = new Map<string, boolean>();
+    setExpandedState(newExpandedState);
+
+    const { nodes: newNodes, edges: newEdges } = getVisibleNodesAndEdges(
+      data.nodes,
+      data.edges,
+      newExpandedState
+    );
+
+    const nodesWithHandler = newNodes.map(node => ({
+      ...node,
+      data: {
+        ...node.data,
+        onExpand: handleNodeExpand,
+      },
+    }));
+
+    setNodes(nodesWithHandler);
+    setEdges(newEdges);
+  }, [data, getVisibleNodesAndEdges, handleNodeExpand, setNodes, setEdges]);
+
+  if (nodes.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-48 text-text-muted">
+        <Network className="w-12 h-12 mb-3 opacity-30" />
+        <p className="text-sm">No mind map data</p>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6">
-      {Object.entries(nodesByType).map(([type, nodes]) => (
-        <div key={type}>
-          <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-2">
-            {type}
-          </h3>
-          <div className="space-y-2">
-            {nodes.map((node) => (
-              <div
-                key={node.id}
-                className={cn(
-                  "px-3 py-2 rounded-lg text-sm",
-                  typeColors[type] || typeColors.default
-                )}
-              >
-                <div className="font-medium">{node.label}</div>
-                {node.data && Object.keys(node.data).length > 0 && (
-                  <div className="text-xs opacity-75 mt-1">
-                    {Object.entries(node.data)
-                      .slice(0, 2)
-                      .map(([key, value]) => (
-                        <div key={key}>
-                          {key}: {String(value)}
-                        </div>
-                      ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      ))}
-
-      {data.edges.length > 0 && (
-        <div>
-          <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-2">
-            Connections
-          </h3>
-          <div className="text-xs text-text-muted">
-            {data.edges.length} relationships identified
-          </div>
-        </div>
-      )}
+    <div className="h-[400px] w-full rounded-lg overflow-hidden border border-border-default">
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        nodeTypes={nodeTypes}
+        fitView
+        minZoom={0.3}
+        maxZoom={1.5}
+        defaultEdgeOptions={{
+          type: "smoothstep",
+          animated: true,
+          style: { stroke: "#333333", strokeWidth: 2 },
+        }}
+        proOptions={{ hideAttribution: true }}
+      >
+        <Controls className="!bg-background-card !border-border-default !rounded-lg" />
+        <MiniMap
+          className="!bg-background-secondary !border-border-default !rounded-lg"
+          nodeColor={(node) => {
+            switch (node.type) {
+              case "disease":
+                return "#EC4899";
+              case "molecule":
+                return "#8B5CF6";
+              case "product":
+                return "#FBBF24";
+              default:
+                return "#666666";
+            }
+          }}
+        />
+        <Background
+          variant={BackgroundVariant.Dots}
+          gap={20}
+          size={1}
+          color="#333333"
+        />
+      </ReactFlow>
     </div>
   );
 }
