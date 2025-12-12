@@ -13,7 +13,7 @@ export default function ChatPage() {
       <div className="flex-1 flex flex-col min-w-0">
         <div className="p-6 border-b border-border-default flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-text-primary">Master Chatbot</h1>
+            {/* <h1 className="text-2xl font-bold text-text-primary">Master Chatbot</h1> */}
             <p className="text-text-secondary mt-1">
               Ask questions about drug discovery, patents, and market analysis
             </p>

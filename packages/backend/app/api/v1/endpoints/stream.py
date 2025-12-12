@@ -33,6 +33,7 @@ async def generate_job_events(job_id: str) -> AsyncGenerator[str, None]:
             break
 
         # Emit setup nodes at the start (query_analyzer, document_check, chat_context, task_planner)
+        # Show each node as "running" briefly, then "completed" for realistic progress
         if not setup_nodes_emitted:
             setup_nodes = [
                 ("query_analyzer", "Analyzing Query"),
@@ -41,17 +42,31 @@ async def generate_job_events(job_id: str) -> AsyncGenerator[str, None]:
                 ("task_planner", "Planning Tasks"),
             ]
             for node_id, node_name in setup_nodes:
-                setup_event = {
+                # First emit as "running"
+                running_event = {
                     "type": "node_update",
                     "node_id": node_id,
                     "node_name": node_name,
-                    "status": "completed",  # These are quick setup steps
+                    "status": "running",
+                    "progress": 50,
+                    "thought": get_worker_thought(node_id, "running", 50),
+                }
+                yield f"data: {json.dumps(running_event)}\n\n"
+                await asyncio.sleep(0.15)  # Brief delay to show running state
+
+                # Then emit as "completed"
+                completed_event = {
+                    "type": "node_update",
+                    "node_id": node_id,
+                    "node_name": node_name,
+                    "status": "completed",
                     "progress": 100,
                     "thought": get_worker_thought(node_id, "completed", 100),
                 }
-                yield f"data: {json.dumps(setup_event)}\n\n"
+                yield f"data: {json.dumps(completed_event)}\n\n"
+                await asyncio.sleep(0.1)  # Small delay before next node
+
             setup_nodes_emitted = True
-            await asyncio.sleep(0.1)  # Small delay between setup nodes
 
         # Send overall progress update if changed
         current_progress = status.get("progress", 0)

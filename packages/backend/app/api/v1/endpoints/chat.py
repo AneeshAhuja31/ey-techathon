@@ -1,5 +1,6 @@
 """Chat initiation endpoint with dual query mode detection."""
-from typing import Optional
+import json
+from typing import Optional, Tuple, List
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,7 +47,7 @@ RESEARCH_KEYWORDS = [
 COMPANY_KEYWORDS = [
     "company data", "our documents", "internal", "uploaded",
     "company files", "our files", "my documents", "proprietary",
-    "from our", "in our", "company's", "organization"
+    "from our", "in our", "company's", "organization", "document"
 ]
 
 
@@ -62,110 +63,189 @@ def is_company_specific_query(message: str) -> bool:
     return any(keyword in message_lower for keyword in COMPANY_KEYWORDS)
 
 
+async def check_documents_and_relevance(message: str) -> Tuple[bool, int, List[dict]]:
+    """
+    Check if documents exist and if any are relevant to the query via vector search.
+
+    Returns:
+        Tuple of (has_documents, doc_count, relevant_results)
+    """
+    has_documents = False
+    doc_count = 0
+    relevant_results = []
+
+    try:
+        # Check database for ready documents
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(func.count(Document.id)).where(Document.status == "ready")
+            )
+            doc_count = result.scalar() or 0
+            has_documents = doc_count > 0
+
+        # If documents exist, do vector search to check relevance
+        if has_documents:
+            vector_store = get_vector_store()
+            search_results = await vector_store.search(
+                query=message,
+                limit=5,
+                score_threshold=0.35  # Moderate threshold for relevance
+            )
+            relevant_results = search_results if search_results else []
+
+    except Exception as e:
+        print(f"Error checking documents: {e}")
+
+    return has_documents, doc_count, relevant_results
+
+
+async def classify_query_with_llm(
+    message: str,
+    has_documents: bool,
+    relevant_results: List[dict]
+) -> Tuple[bool, bool, str]:
+    """
+    Use LLM to classify query intent with context about available documents.
+
+    Returns:
+        Tuple of (is_company_query, should_run_full_analysis, reasoning)
+    """
+    # First check keyword-based detection
+    keyword_company = is_company_specific_query(message)
+    keyword_research = is_research_query(message)
+
+    # If documents exist and we found relevant matches, likely a company query
+    has_relevant_docs = has_documents and len(relevant_results) > 0
+
+    # If no API key, use keyword + vector search based detection
+    if not settings.openai_api_key:
+        is_company = keyword_company or has_relevant_docs
+        should_analyze = keyword_research or is_company
+        return is_company, should_analyze, "keyword_vector_fallback"
+
+    try:
+        client = OpenAI(api_key=settings.openai_api_key)
+
+        # Build context about document relevance
+        doc_context = ""
+        if has_relevant_docs:
+            snippets = [f'- "{r["text"][:150]}..." (score: {r.get("score", 0):.2f})' for r in relevant_results[:3]]
+            doc_context = f"""
+The user has {len(relevant_results)} uploaded company documents that are RELEVANT to this query.
+Relevant document snippets found via vector search:
+{chr(10).join(snippets)}
+
+This strongly suggests the user wants to query their company documents.
+"""
+        elif has_documents:
+            doc_context = "\nThe user has uploaded company documents, but they don't seem directly relevant to this query."
+        else:
+            doc_context = "\nNo company documents have been uploaded."
+
+        classification_prompt = f"""Analyze this user query and classify its intent.
+
+USER QUERY: "{message}"
+
+CONTEXT:{doc_context}
+
+Keyword detection found:
+- Company-related keywords: {keyword_company}
+- Research/analysis keywords: {keyword_research}
+
+Classify the query:
+1. is_company_query: Is the user asking about or wanting to use their company/uploaded documents? (True if relevant docs found OR company keywords detected)
+2. should_run_analysis: Should this trigger a comprehensive analysis pipeline? (True for company queries with docs, research requests, or complex analysis needs)
+
+Consider:
+- If relevant document snippets were found via vector search → definitely a company query that needs analysis
+- If query mentions "our", "company", "uploaded", "internal", "documents" → company query
+- If query asks for research, analysis, investigation → needs full analysis
+- Simple greetings or basic factual questions → don't need analysis
+
+Respond in JSON format only:
+{{"is_company_query": true/false, "should_run_analysis": true/false, "reasoning": "brief explanation"}}"""
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",  # Fast model for classification
+            messages=[
+                {"role": "system", "content": "You are a query classifier. Respond only with valid JSON."},
+                {"role": "user", "content": classification_prompt}
+            ],
+            max_tokens=200,
+            temperature=0,
+        )
+
+        result_text = response.choices[0].message.content.strip()
+        # Handle potential markdown code blocks
+        if result_text.startswith("```"):
+            result_text = result_text.split("```")[1]
+            if result_text.startswith("json"):
+                result_text = result_text[4:]
+        result = json.loads(result_text)
+
+        return (
+            result.get("is_company_query", keyword_company or has_relevant_docs),
+            result.get("should_run_analysis", keyword_research),
+            result.get("reasoning", "llm_classification")
+        )
+    except Exception as e:
+        print(f"LLM classification error: {e}")
+        # Fallback: if we have relevant docs, treat as company query needing analysis
+        is_company = keyword_company or has_relevant_docs
+        should_analyze = keyword_research or has_relevant_docs
+        return is_company, should_analyze, f"fallback: {str(e)}"
+
+
 @router.post("/simple", response_model=SimpleChatResponse)
 async def simple_chat(request: SimpleChatRequest):
     """
-    Simple chat endpoint with dual query mode detection.
+    Simple chat endpoint with smart query mode detection.
 
     Query Modes:
     1. General Mode: Uses OpenAI for simple questions (default)
     2. Research Mode: Triggers agentic pipeline for comprehensive analysis
-    3. Company-Specific Mode: Checks for documents, prompts upload if none
+    3. Company-Specific Mode: Triggers full analysis with company RAG included
 
-    This endpoint uses OpenAI to answer general questions about
-    drug discovery, pharmaceuticals, and related topics.
+    Uses LLM + vector search for intelligent intent classification.
+    Company queries with documents now trigger the full pipeline (with progress bar).
     """
     try:
-        # Check for company-specific query first
-        if is_company_specific_query(request.message):
-            # Check database directly for ready documents (more reliable than Qdrant search)
-            has_documents = False
-            try:
-                async with AsyncSessionLocal() as db:
-                    result = await db.execute(
-                        select(func.count(Document.id)).where(Document.status == "ready")
-                    )
-                    doc_count = result.scalar() or 0
-                    has_documents = doc_count > 0
-            except Exception as e:
-                print(f"Error checking documents: {e}")
-                has_documents = False
+        # Step 1: Check documents and do relevance search
+        has_documents, doc_count, relevant_results = await check_documents_and_relevance(request.message)
 
-            if not has_documents:
-                return SimpleChatResponse(
-                    response="I'd love to help analyze your company data! However, I don't see any uploaded documents yet. Please upload your company documents (PDF) using the upload button, and then I can search and analyze your proprietary information.",
-                    is_research_query=False,
-                    requires_documents=True
-                )
+        # Step 2: Use LLM to classify intent with document context
+        is_company_query, should_run_analysis, reasoning = await classify_query_with_llm(
+            request.message,
+            has_documents,
+            relevant_results
+        )
 
-            # Company-specific query with documents available - do RAG search and answer
-            vector_store = get_vector_store()
-            try:
-                # Search for relevant document chunks
-                search_results = await vector_store.search(
-                    query=request.message,
-                    limit=5,
-                    score_threshold=0.3
-                )
+        print(f"Query classification: company={is_company_query}, analyze={should_run_analysis}, reason={reasoning}")
 
-                if search_results:
-                    # Build context from search results
-                    context_parts = []
-                    for i, result in enumerate(search_results, 1):
-                        context_parts.append(f"[Document {i}]: {result['text']}")
-                    context = "\n\n".join(context_parts)
+        # Step 3: Handle company query without documents
+        if is_company_query and not has_documents:
+            return SimpleChatResponse(
+                response="I'd love to help analyze your company data! However, I don't see any uploaded documents yet. Please upload your company documents (PDF, DOCX, TXT) using the upload button, and then I can search and analyze your proprietary information.",
+                is_research_query=False,
+                is_company_query=True,
+                requires_documents=True
+            )
 
-                    # Use OpenAI to answer based on document context
-                    client = OpenAI(api_key=settings.openai_api_key)
-
-                    rag_prompt = f"""Based on the following company documents, answer the user's question.
-
-COMPANY DOCUMENTS:
-{context}
-
-USER QUESTION: {request.message}
-
-Instructions:
-- Answer based ONLY on the information in the documents above
-- If the documents don't contain relevant information, say so
-- Be specific and cite which document the information comes from when possible
-- Keep the response concise and focused"""
-
-                    response = client.chat.completions.create(
-                        model=settings.llm_model,
-                        messages=[
-                            {"role": "system", "content": "You are a helpful assistant that answers questions based on company documents."},
-                            {"role": "user", "content": rag_prompt}
-                        ],
-                        max_tokens=1000,
-                        temperature=0.3,
-                    )
-
-                    ai_response = response.choices[0].message.content
-                    return SimpleChatResponse(
-                        response=ai_response,
-                        is_research_query=False,
-                        is_company_query=True
-                    )
-                else:
-                    return SimpleChatResponse(
-                        response="I searched your company documents but couldn't find information directly related to your question. Could you try rephrasing, or would you like me to run a comprehensive analysis that includes patents, clinical trials, and market data alongside your documents?",
-                        is_research_query=False,
-                        is_company_query=True
-                    )
-            except Exception as e:
-                print(f"RAG search error: {e}")
-                return SimpleChatResponse(
-                    response="I encountered an error searching your documents. Please try again or rephrase your question.",
-                    is_research_query=False,
-                    is_company_query=True
-                )
-
-        # Check if this should be a research query - return flag to start job immediately
-        if is_research_query(request.message):
+        # Step 4: Company query with documents OR research query → trigger full analysis pipeline
+        # This shows the progress bar with all nodes including company RAG
+        if should_run_analysis or (is_company_query and has_documents):
             return SimpleChatResponse(
                 response="",  # No canned message - frontend will start job directly
-                is_research_query=True
+                is_research_query=True,  # This triggers the job with progress bar
+                is_company_query=is_company_query  # Frontend uses this to include company data
+            )
+
+        # Step 5: Simple keyword-based research check (fallback)
+        if is_research_query(request.message):
+            return SimpleChatResponse(
+                response="",
+                is_research_query=True,
+                is_company_query=is_company_query
             )
 
         # Use OpenAI for regular chat (General Mode)

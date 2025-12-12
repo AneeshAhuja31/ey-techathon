@@ -417,8 +417,8 @@ Once uploaded, I can include your proprietary data in the analysis alongside mar
           <MessageBubble key={message.id} message={message} />
         ))}
 
-        {/* Show LangGraph visualization for SSE streaming */}
-        {streamingJobId && sseNodes.length > 0 && (
+        {/* Show LangGraph visualization immediately when job starts */}
+        {streamingJobId && (
           <LangGraphInline nodes={sseNodes} className="my-4" />
         )}
 
