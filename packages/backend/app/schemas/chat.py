@@ -11,6 +11,7 @@ class ChatOptions(BaseModel):
     include_web_intel: bool = Field(default=True, description="Include web intelligence")
     include_literature: bool = Field(default=True, description="Include scientific literature")
     include_company_data: bool = Field(default=False, description="Include company documents (RAG)")
+    company_data_only: bool = Field(default=False, description="Only run company RAG worker (no other research)")
 
 
 class ChatInitiateRequest(BaseModel):
@@ -87,6 +88,7 @@ class SimpleChatResponse(BaseModel):
     patent_id: Optional[str] = Field(default=None, description="Specific patent ID if requested")
     is_company_query: bool = Field(default=False, description="Whether this is a company-specific query")
     requires_documents: bool = Field(default=False, description="Whether user needs to upload documents first")
+    company_data_only: bool = Field(default=False, description="If true, only run company RAG worker (no full research)")
 
     class Config:
         json_schema_extra = {

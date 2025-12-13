@@ -237,14 +237,37 @@ async def task_planner(state: MasterState) -> Dict[str, Any]:
 
     Creates a list of subtasks to be executed by worker agents.
     Includes company RAG and literature agents when appropriate.
+    Supports company_data_only mode for lightweight document queries.
     """
     options = state.get("options", {})
     intent = state.get("intent", "drug_research")
     is_company_query = state.get("is_company_query", False)
+    company_data_only = options.get("company_data_only", False)
 
     subtasks = []
 
-    # Always include relevant workers based on options
+    # If company_data_only mode, ONLY run company RAG and report
+    if company_data_only:
+        subtasks.append({
+            "id": "task_company_rag",
+            "worker_type": "company_rag",
+            "description": "Search and analyze company documents",
+            "priority": 1
+        })
+        subtasks.append({
+            "id": "task_report",
+            "worker_type": "report",
+            "description": "Generate response from document analysis",
+            "priority": 2
+        })
+        return {
+            "subtasks": subtasks,
+            "company_data_only": True,
+            "progress": 15,
+            "updated_at": datetime.utcnow().isoformat()
+        }
+
+    # Full research mode - include relevant workers based on options
     if options.get("include_market_data", True):
         subtasks.append({
             "id": "task_iqvia",
@@ -310,8 +333,16 @@ async def task_planner(state: MasterState) -> Dict[str, Any]:
     }
 
 
+def _should_run_worker(state: MasterState, worker_type: str) -> bool:
+    """Check if a worker should run based on subtasks."""
+    subtasks = state.get("subtasks", [])
+    return any(t.get("worker_type") == worker_type for t in subtasks)
+
+
 async def iqvia_node(state: MasterState) -> Dict[str, Any]:
-    """Execute IQVIA Insights worker."""
+    """Execute IQVIA Insights worker (skip if not in subtasks)."""
+    if not _should_run_worker(state, "iqvia"):
+        return {"progress": 35, "updated_at": datetime.utcnow().isoformat()}
     result = await iqvia_worker.run(state)
     return {
         **result,
@@ -321,7 +352,9 @@ async def iqvia_node(state: MasterState) -> Dict[str, Any]:
 
 
 async def patent_node(state: MasterState) -> Dict[str, Any]:
-    """Execute Patent Landscape worker."""
+    """Execute Patent Landscape worker (skip if not in subtasks)."""
+    if not _should_run_worker(state, "patent"):
+        return {"progress": 50, "updated_at": datetime.utcnow().isoformat()}
     result = await patent_worker.run(state)
     return {
         **result,
@@ -331,7 +364,9 @@ async def patent_node(state: MasterState) -> Dict[str, Any]:
 
 
 async def clinical_node(state: MasterState) -> Dict[str, Any]:
-    """Execute Clinical Trials worker."""
+    """Execute Clinical Trials worker (skip if not in subtasks)."""
+    if not _should_run_worker(state, "clinical"):
+        return {"progress": 65, "updated_at": datetime.utcnow().isoformat()}
     result = await clinical_worker.run(state)
     return {
         **result,
@@ -341,7 +376,9 @@ async def clinical_node(state: MasterState) -> Dict[str, Any]:
 
 
 async def web_intel_node(state: MasterState) -> Dict[str, Any]:
-    """Execute Web Intelligence worker."""
+    """Execute Web Intelligence worker (skip if not in subtasks)."""
+    if not _should_run_worker(state, "web_intel"):
+        return {"progress": 70, "updated_at": datetime.utcnow().isoformat()}
     result = await web_intel_worker.run(state)
     return {
         **result,
@@ -351,7 +388,9 @@ async def web_intel_node(state: MasterState) -> Dict[str, Any]:
 
 
 async def literature_node(state: MasterState) -> Dict[str, Any]:
-    """Execute Scientific Literature worker."""
+    """Execute Scientific Literature worker (skip if not in subtasks)."""
+    if not _should_run_worker(state, "literature"):
+        return {"progress": 80, "updated_at": datetime.utcnow().isoformat()}
     result = await literature_worker.run(state)
     return {
         **result,
@@ -361,7 +400,9 @@ async def literature_node(state: MasterState) -> Dict[str, Any]:
 
 
 async def company_rag_node(state: MasterState) -> Dict[str, Any]:
-    """Execute Company Knowledge RAG worker."""
+    """Execute Company Knowledge RAG worker (skip if not in subtasks)."""
+    if not _should_run_worker(state, "company_rag"):
+        return {"progress": 85, "updated_at": datetime.utcnow().isoformat()}
     result = await company_rag_worker.run(state)
     return {
         **result,

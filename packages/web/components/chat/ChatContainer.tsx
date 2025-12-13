@@ -230,17 +230,30 @@ export function ChatContainer() {
   }, [currentJobId, currentJob?.status, pollJobStatus]);
 
   // Start a research job with SSE streaming
-  const startResearchJob = async (query: string, includeCompanyData: boolean = false) => {
+  const startResearchJob = async (query: string, includeCompanyData: boolean = false, companyDataOnly: boolean = false) => {
     try {
       const response = await chatApi.initiate(query, {
-        include_patents: true,
-        include_clinical_trials: true,
-        include_market_data: true,
-        include_literature: true,
-        include_company_data: includeCompanyData,
+        include_patents: !companyDataOnly,
+        include_clinical_trials: !companyDataOnly,
+        include_market_data: !companyDataOnly,
+        include_literature: !companyDataOnly,
+        include_company_data: includeCompanyData || companyDataOnly,
+        company_data_only: companyDataOnly,
       });
 
       const { job_id, status } = response.data;
+
+      // Different worker list for company-data-only mode
+      const workers = companyDataOnly
+        ? [{ name: "Company Documents", status: "pending" as const, progress: 0 }]
+        : [
+            { name: "Market Research", status: "pending" as const, progress: 0 },
+            { name: "Patent Search", status: "pending" as const, progress: 0 },
+            { name: "Clinical Trials", status: "pending" as const, progress: 0 },
+            { name: "Web Intel", status: "pending" as const, progress: 0 },
+            { name: "Literature", status: "pending" as const, progress: 0 },
+            ...(includeCompanyData ? [{ name: "Company Data", status: "pending" as const, progress: 0 }] : []),
+          ];
 
       const newJob = {
         id: job_id,
@@ -249,14 +262,7 @@ export function ChatContainer() {
         status: status as "pending" | "running" | "completed" | "failed",
         progress: 0,
         startedAt: new Date().toISOString(),
-        workers: [
-          { name: "Market Research", status: "pending" as const, progress: 0 },
-          { name: "Patent Search", status: "pending" as const, progress: 0 },
-          { name: "Clinical Trials", status: "pending" as const, progress: 0 },
-          { name: "Web Intel", status: "pending" as const, progress: 0 },
-          { name: "Literature", status: "pending" as const, progress: 0 },
-          ...(includeCompanyData ? [{ name: "Company Data", status: "pending" as const, progress: 0 }] : []),
-        ],
+        workers,
       };
 
       addJob(newJob);
@@ -266,13 +272,24 @@ export function ChatContainer() {
       setStreamingJobId(job_id);
       setSseNodes([]);
       clearPipelineNodes();
-      openMindMap(); // Auto-open the sidebar when analysis starts
-      // No canned message - the progress UI shows the analysis is running
+      if (!companyDataOnly) {
+        openMindMap(); // Auto-open the sidebar only for full research
+      }
 
     } catch (error) {
       console.log("Backend unavailable for research job, using mock mode");
 
       const newJobId = `job-${Date.now()}`;
+      const workers = companyDataOnly
+        ? [{ name: "Company Documents", status: "running" as const, progress: 0 }]
+        : [
+            { name: "Market Research", status: "running" as const, progress: 0 },
+            { name: "Patent Search", status: "pending" as const, progress: 0 },
+            { name: "Clinical Trials", status: "pending" as const, progress: 0 },
+            { name: "Web Intel", status: "pending" as const, progress: 0 },
+            { name: "Literature", status: "pending" as const, progress: 0 },
+          ];
+
       const newJob = {
         id: newJobId,
         title: query.slice(0, 50) + (query.length > 50 ? "..." : ""),
@@ -280,18 +297,11 @@ export function ChatContainer() {
         status: "running" as const,
         progress: 0,
         startedAt: new Date().toISOString(),
-        workers: [
-          { name: "Market Research", status: "running" as const, progress: 0 },
-          { name: "Patent Search", status: "pending" as const, progress: 0 },
-          { name: "Clinical Trials", status: "pending" as const, progress: 0 },
-          { name: "Web Intel", status: "pending" as const, progress: 0 },
-          { name: "Literature", status: "pending" as const, progress: 0 },
-        ],
+        workers,
       };
 
       addJob(newJob);
       setCurrentJobId(newJobId);
-      // No canned message - the progress UI shows the analysis is running
     }
   };
 
@@ -337,7 +347,7 @@ Your documents will be securely vectorized and used for RAG-based analysis along
 
       // Try simple chat first
       const response = await chatApi.simple(content, conversationHistory);
-      const { response: aiResponse, is_research_query, is_company_query, requires_documents } = response.data;
+      const { response: aiResponse, is_research_query, is_company_query, requires_documents, company_data_only } = response.data;
 
       // If backend says we need documents for company query
       if (is_company_query && requires_documents && !hasDocuments) {
@@ -356,7 +366,8 @@ Once uploaded, I can include your proprietary data in the analysis alongside mar
 
       // If it's a research query, start the job directly (no confirmation needed)
       if (is_research_query) {
-        await startResearchJob(content, (is_company_query || wantsCompanyData) && hasDocuments);
+        const includeCompanyData = (is_company_query || wantsCompanyData) && hasDocuments;
+        await startResearchJob(content, includeCompanyData, company_data_only || false);
         setLoading(false);
         return;
       }

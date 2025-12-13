@@ -1,9 +1,15 @@
 """Report Generator Worker Agent - Synthesizes all worker outputs."""
 from typing import Dict, Any, List
 import asyncio
+import logging
+
+from openai import OpenAI
 
 from app.agents.workers.base_worker import BaseWorker
 from app.agents.state import MasterState, WorkerOutput
+from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class ReportGeneratorWorker(BaseWorker):
@@ -22,11 +28,25 @@ class ReportGeneratorWorker(BaseWorker):
     async def execute(self, state: MasterState) -> Dict[str, Any]:
         """
         Synthesize all worker outputs into a comprehensive report.
+        For company_data_only mode, generates LLM response instead of mindmap.
         """
-        await self.update_progress(10)
-
-        # Collect all worker outputs
+        options = state.get("options", {})
+        company_data_only = options.get("company_data_only", False)
         worker_outputs = state.get("worker_outputs", [])
+
+        # Handle company_data_only mode - generate LLM response, no mindmap
+        if company_data_only:
+            await self.update_progress(20, "Generating response from documents...")
+            response = await self._generate_company_data_response(state["query"], worker_outputs)
+            await self.update_progress(100, "Complete")
+            return {
+                "mind_map_data": None,
+                "summary": response,
+                "report": {"company_data_response": response}
+            }
+
+        # Full research mode - generate mindmap and summary
+        await self.update_progress(10)
 
         await self.update_progress(30)
 
@@ -50,6 +70,80 @@ class ReportGeneratorWorker(BaseWorker):
             "summary": summary,
             "report": report
         }
+
+    async def _generate_company_data_response(self, query: str, outputs: List[WorkerOutput]) -> str:
+        """Generate LLM response for company data queries using document context."""
+        # Extract company data from worker outputs
+        company_data = None
+        for output in outputs:
+            if isinstance(output, dict):
+                worker_name = output.get("worker_name", "")
+                data = output.get("data", {})
+            else:
+                worker_name = getattr(output, "worker_name", "")
+                data = getattr(output, "data", {})
+
+            if "Company" in worker_name and data:
+                company_data = data
+                break
+
+        if not company_data or not company_data.get("has_documents"):
+            return "No relevant information found in your company documents for this query."
+
+        # Build context from document chunks
+        chunks = company_data.get("relevant_chunks", [])
+        if not chunks:
+            return "Your documents were searched but no relevant sections were found for this query."
+
+        doc_context = "\n\n".join([
+            f"[From: {c.get('filename', 'document')}]\n{c.get('text', '')}"
+            for c in chunks
+        ])
+
+        # Generate LLM response
+        if not settings.openai_api_key:
+            # Fallback without LLM
+            return f"Based on your company documents, I found {len(chunks)} relevant sections.\n\n**Key findings:**\n{doc_context[:1000]}..."
+
+        try:
+            client = OpenAI(api_key=settings.openai_api_key)
+
+            messages = [
+                {
+                    "role": "system",
+                    "content": """You are DrugAI, an intelligent assistant for pharmaceutical research.
+You have access to the user's company documents. Use the provided document context to answer their question.
+
+IMPORTANT:
+- Base your answer primarily on the document context provided
+- If the context doesn't contain relevant information, say so clearly
+- Be concise but thorough
+- Cite specific information from the documents when possible
+- Format your response with clear sections if appropriate"""
+                },
+                {
+                    "role": "user",
+                    "content": f"""DOCUMENT CONTEXT:
+{doc_context}
+
+USER QUESTION: {query}
+
+Please answer based on the document context above."""
+                }
+            ]
+
+            response = client.chat.completions.create(
+                model=settings.llm_model,
+                messages=messages,
+                max_tokens=1500,
+                temperature=0.7,
+            )
+
+            return response.choices[0].message.content
+
+        except Exception as e:
+            logger.error(f"LLM response error: {e}")
+            return f"I found {len(chunks)} relevant sections in your documents but encountered an error generating the response. Here's a preview:\n\n{doc_context[:800]}..."
 
     def _generate_mind_map(self, query: str, outputs: List[WorkerOutput]) -> Dict[str, Any]:
         """Generate enhanced mind map with intelligent categorization.

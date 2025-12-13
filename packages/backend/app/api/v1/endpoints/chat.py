@@ -392,7 +392,7 @@ async def simple_chat(request: SimpleChatRequest):
             )
 
         if intent == "COMPANY_DATA":
-            # User wants to query company documents - do RAG, NOT full research
+            # User wants to query company documents - trigger job with progress bar
             if not has_documents:
                 return SimpleChatResponse(
                     response="I'd love to help with your company data! However, no documents have been uploaded yet. Please upload your company documents (PDF, DOCX, TXT) using the upload button.",
@@ -401,36 +401,13 @@ async def simple_chat(request: SimpleChatRequest):
                     requires_documents=True
                 )
 
-            # Has documents - do RAG query and return LLM response directly
-            # Build document context from relevant results
-            if relevant_results:
-                doc_context = "\n\n".join([
-                    f"[From: {r.get('metadata', {}).get('filename', 'document')}]\n{r.get('text', '')}"
-                    for r in relevant_results[:5]
-                ])
-            else:
-                # No relevant results found, do a fresh search
-                vector_store = get_vector_store()
-                search_results = await vector_store.search(query=request.message, limit=5)
-                if search_results:
-                    doc_context = "\n\n".join([
-                        f"[From: {r.get('metadata', {}).get('filename', 'document')}]\n{r.get('text', '')}"
-                        for r in search_results[:5]
-                    ])
-                else:
-                    doc_context = "No relevant information found in your documents for this query."
-
-            # Generate LLM response with document context
-            rag_response = await generate_rag_response(
-                message=request.message,
-                document_context=doc_context,
-                conversation_history=request.conversation_history
-            )
-
+            # Has documents - trigger job-based flow for progress bar
+            # company_data_only=True tells the graph to only run company RAG worker
             return SimpleChatResponse(
-                response=rag_response,
-                is_research_query=False,  # NO research pipeline - just RAG response
-                is_company_query=True
+                response="",
+                is_research_query=True,  # Triggers job creation with progress bar
+                is_company_query=True,
+                company_data_only=True  # Only run company RAG, not full research
             )
 
         # Step 4: DIRECT_ANSWER - Use OpenAI for regular chat
