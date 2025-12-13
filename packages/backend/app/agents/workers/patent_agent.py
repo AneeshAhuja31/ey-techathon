@@ -28,10 +28,17 @@ class PatentLandscapeWorker(BaseWorker):
         """
         Execute patent landscape analysis.
 
+        Uses refined query if available (from query_refiner node),
+        otherwise uses the original query.
+
         Uses SerpAPI for Google Patents search if API key is available,
         otherwise falls back to mock data.
         """
-        query = state["query"]
+        # Use refined patent query if available, otherwise use original
+        refined_queries = state.get("refined_queries", {})
+        query = refined_queries.get("patent", state["query"])
+
+        logger.info(f"Patent search with query: {query}")
 
         await self.update_progress(15, "Searching Google Patents...")
 

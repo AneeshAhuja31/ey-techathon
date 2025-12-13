@@ -99,9 +99,17 @@ class MasterState(TypedDict):
     job_id: str
     options: Dict[str, Any]
 
+    # Conversation Context (for query refinement)
+    conversation_history: List[Dict[str, str]]  # [{role, content}]
+
     # Intent Understanding
     intent: str
     entities: List[str]
+    is_company_query: bool
+    execution_mode: str  # "full_research", "direct_patent", "mindmap_only"
+
+    # Refined Queries (tool-specific optimized queries)
+    refined_queries: Dict[str, str]  # {patent, web, vector, clinical, literature}
 
     # Task Planning
     subtasks: List[Dict[str, Any]]
@@ -121,15 +129,26 @@ class MasterState(TypedDict):
     updated_at: str
 
 
-def create_initial_state(query: str, job_id: str, options: Dict[str, Any] = None) -> MasterState:
+def create_initial_state(
+    query: str,
+    job_id: str,
+    options: Dict[str, Any] = None,
+    conversation_history: List[Dict[str, str]] = None,
+    is_company_query: bool = False,
+    execution_mode: str = "full_research"
+) -> MasterState:
     """Create initial state for a new job."""
     now = datetime.utcnow().isoformat()
     return MasterState(
         query=query,
         job_id=job_id,
         options=options or {},
+        conversation_history=conversation_history or [],
         intent="",
         entities=[],
+        is_company_query=is_company_query,
+        execution_mode=execution_mode,
+        refined_queries={},
         subtasks=[],
         worker_outputs=[],
         final_report=None,

@@ -80,9 +80,11 @@ class SimpleChatRequest(BaseModel):
 
 
 class SimpleChatResponse(BaseModel):
-    """Response schema for simple chat with dual query mode."""
+    """Response schema for simple chat with explicit intent detection."""
     response: str = Field(..., description="AI response")
-    is_research_query: bool = Field(default=False, description="Whether this should trigger a research job")
+    is_research_query: bool = Field(default=False, description="Whether this should trigger a full research pipeline")
+    is_patent_query: bool = Field(default=False, description="Whether this is a direct patent search request")
+    patent_id: Optional[str] = Field(default=None, description="Specific patent ID if requested")
     is_company_query: bool = Field(default=False, description="Whether this is a company-specific query")
     requires_documents: bool = Field(default=False, description="Whether user needs to upload documents first")
 
@@ -91,6 +93,8 @@ class SimpleChatResponse(BaseModel):
             "example": {
                 "response": "GLP-1 (Glucagon-like peptide-1) is a hormone...",
                 "is_research_query": False,
+                "is_patent_query": False,
+                "patent_id": None,
                 "is_company_query": False,
                 "requires_documents": False
             }

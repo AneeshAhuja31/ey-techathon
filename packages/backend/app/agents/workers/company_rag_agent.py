@@ -28,14 +28,21 @@ class CompanyKnowledgeAgent(BaseWorker):
         """
         Execute company document retrieval and analysis.
 
+        Uses refined query if available (from query_refiner node),
+        otherwise uses the original query.
+
         Args:
             state: Master state containing query and user_id
 
         Returns:
             Dictionary with relevant documents and synthesized insights
         """
-        query = state["query"]
+        # Use refined vector query if available, otherwise use original
+        refined_queries = state.get("refined_queries", {})
+        query = refined_queries.get("vector", state["query"])
         user_id = state.get("options", {}).get("user_id")
+
+        logger.info(f"Company RAG search with query: {query}")
 
         await self.update_progress(10, "Searching company documents...")
 

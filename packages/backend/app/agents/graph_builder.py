@@ -1,8 +1,11 @@
 """LangGraph StateGraph construction for Master-Worker orchestration."""
+import json
+import logging
 from typing import Dict, Any, List, Literal
 from datetime import datetime
 
 from langgraph.graph import StateGraph, END
+from openai import OpenAI
 
 from app.agents.state import MasterState, WorkerOutput, create_initial_state
 from app.agents.workers.iqvia_agent import IQVIAInsightsWorker
@@ -12,6 +15,9 @@ from app.agents.workers.web_intel_agent import WebIntelligenceWorker
 from app.agents.workers.report_agent import ReportGeneratorWorker
 from app.agents.workers.company_rag_agent import CompanyKnowledgeAgent
 from app.agents.workers.literature_agent import ScientificLiteratureAgent
+from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 # Initialize worker instances
@@ -48,7 +54,7 @@ async def intent_classifier(state: MasterState) -> Dict[str, Any]:
     options = state.get("options", {})
 
     # Check if company-specific query
-    is_company_query = is_company_specific_query(query) or options.get("include_company_data", False)
+    is_company_query = state.get("is_company_query", False) or is_company_specific_query(query) or options.get("include_company_data", False)
 
     # Simple intent classification (in production, use LLM)
     intent = "drug_research"  # Default intent
@@ -81,6 +87,147 @@ async def intent_classifier(state: MasterState) -> Dict[str, Any]:
         "status": "processing",
         "progress": 10,
         "updated_at": datetime.utcnow().isoformat()
+    }
+
+
+# Query refinement prompt for creating tool-specific optimized queries
+QUERY_REFINEMENT_PROMPT = """You are a query optimization specialist for a pharmaceutical research platform.
+Given the user's original query and conversation history, create optimized search queries for different tools.
+
+CONVERSATION HISTORY:
+{conversation_history}
+
+ORIGINAL QUERY: "{query}"
+
+IDENTIFIED ENTITIES: {entities}
+
+Create targeted search queries for each tool type. Each query should:
+1. Extract key pharmaceutical/medical terms from context
+2. Be tailored for the specific search tool's strengths
+3. Include relevant synonyms and related terms
+4. Be concise but comprehensive
+
+Generate queries for:
+
+1. **PATENT_QUERY**: For Google Patents API
+   - Focus on: molecules, mechanisms, formulations, delivery methods, assignee names
+   - Example: "semaglutide extended release formulation GLP-1 receptor agonist"
+
+2. **WEB_QUERY**: For Tavily web search
+   - Focus on: recent news, market developments, regulatory updates, company names
+   - Example: "Wegovy semaglutide FDA approval market news 2024"
+
+3. **VECTOR_QUERY**: For Qdrant vector search (company documents)
+   - Focus on: general concepts for semantic matching
+   - Keep broader for similarity search
+   - Example: "GLP-1 receptor agonist obesity treatment efficacy safety"
+
+4. **CLINICAL_QUERY**: For ClinicalTrials.gov/PubMed
+   - Focus on: medical conditions, drug names, trial phases
+   - Example: "semaglutide obesity phase 3 clinical trial outcomes"
+
+5. **LITERATURE_QUERY**: For PubMed scientific literature
+   - Focus on: scientific terms, mechanisms, research topics
+   - Example: "GLP-1 receptor agonist cardiovascular outcomes meta-analysis"
+
+Respond ONLY with valid JSON (no markdown, no explanation):
+{{"patent": "...", "web": "...", "vector": "...", "clinical": "...", "literature": "..."}}"""
+
+
+async def query_refiner(state: MasterState) -> Dict[str, Any]:
+    """
+    Refine the user's query into tool-specific optimized queries.
+
+    This node analyzes the conversation history and current query
+    to create targeted search queries for each tool type, improving
+    search relevance and results quality.
+    """
+    query = state["query"]
+    entities = state.get("entities", [])
+    conversation_history = state.get("conversation_history", [])
+
+    # If no API key, use fallback refinement
+    if not settings.openai_api_key:
+        return {
+            "refined_queries": _fallback_query_refinement(query, entities),
+            "progress": 15,
+            "updated_at": datetime.utcnow().isoformat()
+        }
+
+    try:
+        client = OpenAI(api_key=settings.openai_api_key)
+
+        # Format conversation history
+        history_text = "None"
+        if conversation_history:
+            history_lines = []
+            for msg in conversation_history[-3:]:  # Last 3 messages
+                role = msg.get("role", "user")
+                content = msg.get("content", "")[:150]
+                history_lines.append(f"{role}: {content}")
+            history_text = "\n".join(history_lines)
+
+        prompt = QUERY_REFINEMENT_PROMPT.format(
+            conversation_history=history_text,
+            query=query,
+            entities=", ".join(entities) if entities else "None identified"
+        )
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a query optimization specialist. Respond ONLY with valid JSON, no markdown."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=500,
+            temperature=0.3,
+        )
+
+        result_text = response.choices[0].message.content.strip()
+
+        # Handle markdown code blocks if present
+        if result_text.startswith("```"):
+            result_text = result_text.split("```")[1]
+            if result_text.startswith("json"):
+                result_text = result_text[4:]
+            result_text = result_text.strip()
+
+        refined = json.loads(result_text)
+
+        logger.info(f"Query refinement successful: {refined}")
+
+        return {
+            "refined_queries": {
+                "patent": refined.get("patent", query),
+                "web": refined.get("web", query),
+                "vector": refined.get("vector", query),
+                "clinical": refined.get("clinical", query),
+                "literature": refined.get("literature", query)
+            },
+            "progress": 15,
+            "updated_at": datetime.utcnow().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Query refinement error: {e}")
+        return {
+            "refined_queries": _fallback_query_refinement(query, entities),
+            "progress": 15,
+            "updated_at": datetime.utcnow().isoformat()
+        }
+
+
+def _fallback_query_refinement(query: str, entities: list) -> Dict[str, str]:
+    """Fallback query refinement when LLM is unavailable."""
+    base_query = query
+    entity_str = " ".join(entities) if entities else ""
+
+    return {
+        "patent": f"{base_query} {entity_str} formulation mechanism patent".strip(),
+        "web": f"{base_query} {entity_str} news market 2024 2025".strip(),
+        "vector": base_query,
+        "clinical": f"{base_query} {entity_str} clinical trial phase".strip(),
+        "literature": f"{base_query} {entity_str} research study mechanism".strip()
     }
 
 
@@ -288,10 +435,13 @@ def create_drug_discovery_graph() -> StateGraph:
     Create the LangGraph StateGraph for drug discovery analysis.
 
     Architecture:
-    1. Intent Classifier -> Task Planner
+    1. Intent Classifier -> Query Refiner -> Task Planner
     2. Task Planner -> Workers (IQVIA, Patent, Clinical, Web Intel, Literature, Company RAG)
     3. All Workers -> Synthesizer
     4. Synthesizer -> END
+
+    The Query Refiner creates tool-specific optimized queries based on
+    conversation history and current query for better search results.
 
     For MVP, workers run sequentially. In production, use Send API for parallel.
     """
@@ -300,6 +450,7 @@ def create_drug_discovery_graph() -> StateGraph:
 
     # Add nodes
     graph.add_node("intent_classifier", intent_classifier)
+    graph.add_node("query_refiner", query_refiner)  # NEW: Query refinement node
     graph.add_node("task_planner", task_planner)
     graph.add_node("iqvia_worker", iqvia_node)
     graph.add_node("patent_worker", patent_node)
@@ -313,7 +464,9 @@ def create_drug_discovery_graph() -> StateGraph:
     graph.set_entry_point("intent_classifier")
 
     # Add edges - Sequential flow for MVP
-    graph.add_edge("intent_classifier", "task_planner")
+    # Intent → Query Refiner → Task Planner → Workers → Synthesizer
+    graph.add_edge("intent_classifier", "query_refiner")  # NEW edge
+    graph.add_edge("query_refiner", "task_planner")  # Updated edge
     graph.add_edge("task_planner", "iqvia_worker")
     graph.add_edge("iqvia_worker", "patent_worker")
     graph.add_edge("patent_worker", "clinical_worker")

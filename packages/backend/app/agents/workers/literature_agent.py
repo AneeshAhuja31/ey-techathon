@@ -33,13 +33,20 @@ class ScientificLiteratureAgent(BaseWorker):
         """
         Execute scientific literature search and analysis.
 
+        Uses refined query if available (from query_refiner node),
+        otherwise uses the original query.
+
         Args:
             state: Master state containing query
 
         Returns:
             Dictionary with papers, trends, and insights
         """
-        query = state["query"]
+        # Use refined literature query if available, otherwise use original
+        refined_queries = state.get("refined_queries", {})
+        query = refined_queries.get("literature", state["query"])
+
+        logger.info(f"Literature search with query: {query}")
 
         await self.update_progress(10, "Searching PubMed database...")
 

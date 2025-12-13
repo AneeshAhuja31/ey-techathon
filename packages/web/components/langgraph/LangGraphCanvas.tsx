@@ -206,7 +206,7 @@ export function LangGraphCanvas({
   );
 }
 
-// Checkpoint circle component for the progress bar - sleek minimal design
+// Checkpoint circle component for the progress bar - clean white theme
 function CheckpointCircle({
   stage,
   state,
@@ -228,19 +228,19 @@ function CheckpointCircle({
 
   return (
     <div className="relative group flex flex-col items-center">
-      {/* Checkpoint circle - smaller and sleeker */}
+      {/* Checkpoint circle - clean white theme */}
       <div
         className={cn(
           "relative w-5 h-5 rounded-full flex items-center justify-center transition-all duration-200",
-          isCompleted && "bg-accent-green",
-          isRunning && "bg-accent-cyan",
+          isCompleted && "bg-gray-900",
+          isRunning && "bg-emerald-500",
           isFailed && "bg-red-500",
-          !isCompleted && !isRunning && !isFailed && "bg-gray-600 border border-gray-500"
+          !isCompleted && !isRunning && !isFailed && "bg-gray-200 border border-gray-300"
         )}
       >
         {/* Subtle pulse for running state */}
         {isRunning && (
-          <span className="absolute inset-0 rounded-full bg-accent-cyan animate-ping opacity-30" />
+          <span className="absolute inset-0 rounded-full bg-emerald-500 animate-ping opacity-30" />
         )}
 
         {/* Icon inside circle */}
@@ -251,17 +251,17 @@ function CheckpointCircle({
         ) : isFailed ? (
           <span className="text-white text-[10px] font-bold">!</span>
         ) : (
-          <Icon className="w-2.5 h-2.5 text-gray-400" />
+          <Icon className="w-2.5 h-2.5 text-gray-500" />
         )}
       </div>
 
-      {/* Compact tooltip on hover */}
+      {/* Compact tooltip on hover - light theme */}
       <div className={cn(
         "absolute -bottom-1 translate-y-full opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50",
-        "bg-gray-900 border border-gray-700 rounded px-2 py-1 shadow-lg",
+        "bg-white border border-gray-200 rounded px-2 py-1 shadow-lg",
         "whitespace-nowrap pointer-events-none"
       )}>
-        <span className="text-[10px] text-gray-200">{stage.name}</span>
+        <span className="text-[10px] text-gray-700">{stage.name}</span>
       </div>
     </div>
   );
@@ -338,45 +338,45 @@ export function LangGraphInline({
   return (
     <div
       className={cn(
-        "bg-gray-900/50 border border-gray-700/50 rounded-lg p-3 backdrop-blur-sm",
+        "bg-white border border-gray-200 rounded-xl p-4 shadow-sm",
         className
       )}
     >
       {/* Compact header */}
-      <div className="flex items-center justify-between mb-1.5">
+      <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           {!isComplete && (
-            <Loader2 className="w-3 h-3 text-accent-cyan animate-spin" />
+            <Loader2 className="w-3.5 h-3.5 text-emerald-500 animate-spin" />
           )}
           {isComplete && (
-            <Check className="w-3 h-3 text-accent-green" />
+            <Check className="w-3.5 h-3.5 text-gray-900" />
           )}
-          <span className="text-xs font-medium text-gray-300">
+          <span className="text-sm font-medium text-gray-900">
             {isComplete ? "Analysis Complete" : "Analyzing"}
           </span>
         </div>
-        <span className="text-[10px] text-gray-500">
+        <span className="text-xs text-gray-500 font-medium">
           {completedCount}/{totalCount}
         </span>
       </div>
 
       {/* Current thought - single line */}
-      <p className="text-[11px] text-gray-400 truncate mb-2">
+      <p className="text-xs text-gray-600 truncate mb-3">
         {currentThought}
       </p>
 
       {/* Sleek progress bar with checkpoints */}
       <div className="relative pt-1 pb-4">
-        {/* Background track - thinner */}
-        <div className="absolute top-3.5 left-2.5 right-2.5 h-0.5 bg-gray-700 rounded-full" />
+        {/* Background track - light gray */}
+        <div className="absolute top-3.5 left-2.5 right-2.5 h-1 bg-gray-100 rounded-full" />
 
-        {/* Filled progress track */}
+        {/* Filled progress track - green to black gradient effect */}
         <div
           className={cn(
-            "absolute top-3.5 left-2.5 h-0.5 rounded-full transition-all duration-300 ease-out",
+            "absolute top-3.5 left-2.5 h-1 rounded-full transition-all duration-300 ease-out",
             isComplete
-              ? "bg-accent-green"
-              : "bg-accent-cyan"
+              ? "bg-gray-900"
+              : "bg-gradient-to-r from-emerald-500 to-gray-700"
           )}
           style={{
             width: `calc(${progressPercent}% * (100% - 20px) / 100)`,

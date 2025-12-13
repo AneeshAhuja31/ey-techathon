@@ -24,10 +24,15 @@ class ClinicalTrialsWorker(BaseWorker):
         """
         Execute clinical trials analysis.
 
+        Uses refined query if available (from query_refiner node),
+        otherwise uses the original query.
+
         For MVP, returns mock data. In production, would integrate
         with ClinicalTrials.gov, EudraCT, and other registries.
         """
-        query = state["query"].lower()
+        # Use refined clinical query if available, otherwise use original
+        refined_queries = state.get("refined_queries", {})
+        query = refined_queries.get("clinical", state["query"]).lower()
 
         await self.update_progress(20)
         await asyncio.sleep(0.5)

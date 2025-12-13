@@ -14,7 +14,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import { DiseaseNode, MoleculeNode, ProductNode } from "./CustomNodes";
+import { DiseaseNode, MoleculeNode, ProductNode, CompanyNode, CategoryNode } from "./CustomNodes";
 import { hierarchicalMindMapData, mockMindMapData } from "@/lib/mock-data";
 import { getLayoutedElements } from "@/lib/layout";
 
@@ -22,6 +22,8 @@ const nodeTypes = {
   disease: DiseaseNode,
   molecule: MoleculeNode,
   product: ProductNode,
+  company: CompanyNode,
+  category: CategoryNode,
 };
 
 export function MindMapCanvas() {
@@ -218,6 +220,10 @@ export function MindMapCanvas() {
                 return "#8B5CF6";
               case "product":
                 return "#FBBF24";
+              case "company":
+                return "#3B82F6";
+              case "category":
+                return "#10B981";
               default:
                 return "#666666";
             }

@@ -1,7 +1,7 @@
 """API v1 Router - aggregates all endpoint routers."""
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import chat, jobs, patents, graph, stream, documents
+from app.api.v1.endpoints import chat, jobs, patents, graph, stream, documents, patent_search
 
 api_router = APIRouter()
 
@@ -22,6 +22,13 @@ api_router.include_router(
     patents.router,
     prefix="/patents",
     tags=["Patents"]
+)
+
+# Direct patent search endpoint (bypasses full research pipeline)
+api_router.include_router(
+    patent_search.router,
+    prefix="/patents/direct",
+    tags=["Direct Patent Search"]
 )
 
 api_router.include_router(

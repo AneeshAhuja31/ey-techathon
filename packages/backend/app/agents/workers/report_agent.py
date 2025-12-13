@@ -52,7 +52,13 @@ class ReportGeneratorWorker(BaseWorker):
         }
 
     def _generate_mind_map(self, query: str, outputs: List[WorkerOutput]) -> Dict[str, Any]:
-        """Generate mind map visualization data dynamically from worker outputs."""
+        """Generate enhanced mind map with intelligent categorization.
+
+        Features:
+        - Patents grouped by assignee (company)
+        - Clinical trials grouped by phase
+        - News grouped by theme (regulatory, market, research)
+        """
 
         nodes = []
         edges = []
@@ -67,6 +73,8 @@ class ReportGeneratorWorker(BaseWorker):
         patent_data = {}
         clinical_data = {}
         web_data = {}
+        literature_data = {}
+        company_data = {}
 
         for output in outputs:
             if isinstance(output, dict):
@@ -87,6 +95,10 @@ class ReportGeneratorWorker(BaseWorker):
                 clinical_data = data
             elif "Web" in worker_name or "Intelligence" in worker_name:
                 web_data = data
+            elif "Literature" in worker_name:
+                literature_data = data
+            elif "Company" in worker_name:
+                company_data = data
 
         # Root node - the query topic
         main_topic = query[:30] if len(query) <= 30 else query[:27] + "..."
@@ -99,7 +111,7 @@ class ReportGeneratorWorker(BaseWorker):
             market_cat_id = "cat_market"
             product_ids = []
 
-            for i, product in enumerate(market_products[:5]):  # Limit to 5
+            for i, product in enumerate(market_products[:5]):
                 prod_name = product.get("name", f"Product {i+1}")
                 prod_id = safe_id("prod", f"market_{i}")
                 product_ids.append(prod_id)
@@ -124,7 +136,7 @@ class ReportGeneratorWorker(BaseWorker):
                 category_ids.append(market_cat_id)
                 nodes.append({
                     "id": market_cat_id,
-                    "label": "Market Products",
+                    "label": f"Market ({len(market_products)})",
                     "type": "molecule",
                     "parentId": root_id,
                     "childIds": product_ids,
@@ -133,139 +145,267 @@ class ReportGeneratorWorker(BaseWorker):
                 edge_id += 1
                 edges.append({"id": f"e{edge_id}", "source": root_id, "target": market_cat_id})
 
-        # === PATENT DATA CATEGORY ===
+        # === PATENTS BY ASSIGNEE ===
         patents = patent_data.get("patents", [])
         if patents:
             patent_cat_id = "cat_patents"
-            patent_ids = []
 
-            for i, patent in enumerate(patents[:5]):  # Limit to 5
-                patent_title = patent.get("title", f"Patent {i+1}")
-                patent_node_id = safe_id("pat", f"{i}")
-                patent_ids.append(patent_node_id)
+            # Group patents by assignee
+            patents_by_assignee = {}
+            for patent in patents:
+                assignee = patent.get("assignee", "Unknown")[:20]
+                if assignee not in patents_by_assignee:
+                    patents_by_assignee[assignee] = []
+                patents_by_assignee[assignee].append(patent)
 
+            assignee_ids = []
+            for assignee, assignee_patents in patents_by_assignee.items():
+                assignee_id = safe_id("assignee", assignee)
+                assignee_ids.append(assignee_id)
+                patent_child_ids = []
+
+                for i, patent in enumerate(assignee_patents[:3]):  # Max 3 per assignee
+                    patent_node_id = f"pat_{assignee_id}_{i}"
+                    patent_child_ids.append(patent_node_id)
+
+                    nodes.append({
+                        "id": patent_node_id,
+                        "label": patent.get("title", "")[:25],
+                        "type": "product",
+                        "parentId": assignee_id,
+                        "data": {
+                            "match_score": patent.get("relevance_score", 80),
+                            "patent_id": patent.get("patent_id", ""),
+                            "expiration": patent.get("expiration_date", "")
+                        }
+                    })
+                    edge_id += 1
+                    edges.append({"id": f"e{edge_id}", "source": assignee_id, "target": patent_node_id})
+
+                # Assignee node
                 nodes.append({
-                    "id": patent_node_id,
-                    "label": patent_title[:25],
-                    "type": "product",
+                    "id": assignee_id,
+                    "label": f"{assignee} ({len(assignee_patents)})",
+                    "type": "company",
                     "parentId": patent_cat_id,
-                    "data": {
-                        "match_score": patent.get("relevance_score", 80),
-                        "patent_id": patent.get("patent_id", ""),
-                        "assignee": patent.get("assignee", ""),
-                        "expiration": patent.get("expiration_date", "")
-                    }
+                    "childIds": patent_child_ids,
+                    "isExpanded": False,
+                    "data": {"patent_count": len(assignee_patents)}
                 })
-
                 edge_id += 1
-                edges.append({"id": f"e{edge_id}", "source": patent_cat_id, "target": patent_node_id})
+                edges.append({"id": f"e{edge_id}", "source": patent_cat_id, "target": assignee_id})
 
-            if patent_ids:
+            if assignee_ids:
                 category_ids.append(patent_cat_id)
                 nodes.append({
                     "id": patent_cat_id,
-                    "label": "Patents",
+                    "label": f"Patents ({len(patents)})",
                     "type": "molecule",
                     "parentId": root_id,
-                    "childIds": patent_ids,
+                    "childIds": assignee_ids,
                     "isExpanded": False
                 })
                 edge_id += 1
                 edges.append({"id": f"e{edge_id}", "source": root_id, "target": patent_cat_id})
 
-        # === CLINICAL TRIALS CATEGORY ===
+        # === CLINICAL TRIALS BY PHASE ===
         trials = clinical_data.get("trials", [])
         if trials:
             clinical_cat_id = "cat_clinical"
-            trial_ids = []
 
-            for i, trial in enumerate(trials[:5]):  # Limit to 5
-                trial_title = trial.get("title", f"Trial {i+1}")
-                trial_id = safe_id("trial", f"{i}")
-                trial_ids.append(trial_id)
+            # Group trials by phase
+            trials_by_phase = {}
+            for trial in trials:
+                phase = trial.get("phase", "Unknown Phase")
+                if phase not in trials_by_phase:
+                    trials_by_phase[phase] = []
+                trials_by_phase[phase].append(trial)
 
-                # Calculate score based on phase and status
-                phase = trial.get("phase", "")
-                status = trial.get("status", "")
-                score = 70
-                if "Phase 3" in phase:
-                    score = 90
-                elif "Phase 2" in phase:
-                    score = 75
-                if status == "Completed":
-                    score += 5
+            # Sort phases
+            phase_order = ["Phase 1", "Phase 2", "Phase 3", "Phase 4", "Unknown Phase"]
+            sorted_phases = sorted(trials_by_phase.keys(), key=lambda x: phase_order.index(x) if x in phase_order else 99)
 
+            phase_ids = []
+            for phase in sorted_phases:
+                phase_trials = trials_by_phase[phase]
+                phase_id = safe_id("phase", phase)
+                phase_ids.append(phase_id)
+                trial_child_ids = []
+
+                for i, trial in enumerate(phase_trials[:3]):  # Max 3 per phase
+                    trial_node_id = f"trial_{phase_id}_{i}"
+                    trial_child_ids.append(trial_node_id)
+
+                    status = trial.get("status", "Unknown")
+                    score = 70
+                    if "Phase 3" in phase:
+                        score = 90
+                    elif "Phase 2" in phase:
+                        score = 75
+                    if status == "Completed":
+                        score += 5
+
+                    nodes.append({
+                        "id": trial_node_id,
+                        "label": trial.get("title", "")[:25],
+                        "type": "product",
+                        "parentId": phase_id,
+                        "data": {
+                            "match_score": min(score, 99),
+                            "nct_id": trial.get("nct_id", ""),
+                            "status": status,
+                            "sponsor": trial.get("sponsor", "")
+                        }
+                    })
+                    edge_id += 1
+                    edges.append({"id": f"e{edge_id}", "source": phase_id, "target": trial_node_id})
+
+                # Phase node
                 nodes.append({
-                    "id": trial_id,
-                    "label": trial_title[:25],
-                    "type": "product",
+                    "id": phase_id,
+                    "label": f"{phase} ({len(phase_trials)})",
+                    "type": "category",
                     "parentId": clinical_cat_id,
-                    "data": {
-                        "match_score": min(score, 99),
-                        "nct_id": trial.get("nct_id", ""),
-                        "phase": phase,
-                        "status": status,
-                        "sponsor": trial.get("sponsor", "")
-                    }
+                    "childIds": trial_child_ids,
+                    "isExpanded": False
                 })
-
                 edge_id += 1
-                edges.append({"id": f"e{edge_id}", "source": clinical_cat_id, "target": trial_id})
+                edges.append({"id": f"e{edge_id}", "source": clinical_cat_id, "target": phase_id})
 
-            if trial_ids:
+            if phase_ids:
                 category_ids.append(clinical_cat_id)
                 nodes.append({
                     "id": clinical_cat_id,
-                    "label": "Clinical Trials",
+                    "label": f"Clinical Trials ({len(trials)})",
                     "type": "molecule",
                     "parentId": root_id,
-                    "childIds": trial_ids,
+                    "childIds": phase_ids,
                     "isExpanded": False
                 })
                 edge_id += 1
                 edges.append({"id": f"e{edge_id}", "source": root_id, "target": clinical_cat_id})
 
-        # === WEB/NEWS CATEGORY ===
+        # === WEB/NEWS BY THEME ===
         news = web_data.get("news", [])
         if news:
             news_cat_id = "cat_news"
-            news_ids = []
 
-            for i, article in enumerate(news[:4]):  # Limit to 4
-                article_title = article.get("title", f"News {i+1}")
-                news_node_id = safe_id("news", f"{i}")
-                news_ids.append(news_node_id)
+            # Categorize by theme
+            news_by_theme = {
+                "regulatory": [],
+                "market": [],
+                "research": [],
+                "other": []
+            }
 
+            for article in news:
+                title_lower = article.get("title", "").lower()
+                if any(word in title_lower for word in ["fda", "ema", "approval", "regulatory", "approved"]):
+                    news_by_theme["regulatory"].append(article)
+                elif any(word in title_lower for word in ["market", "sales", "revenue", "demand", "supply"]):
+                    news_by_theme["market"].append(article)
+                elif any(word in title_lower for word in ["study", "trial", "research", "clinical", "data"]):
+                    news_by_theme["research"].append(article)
+                else:
+                    news_by_theme["other"].append(article)
+
+            theme_labels = {
+                "regulatory": "Regulatory News",
+                "market": "Market Updates",
+                "research": "Research News",
+                "other": "General News"
+            }
+
+            theme_ids = []
+            for theme, articles in news_by_theme.items():
+                if not articles:
+                    continue
+
+                theme_id = safe_id("theme", theme)
+                theme_ids.append(theme_id)
+                article_ids = []
+
+                for i, article in enumerate(articles[:3]):  # Max 3 per theme
+                    article_id = f"news_{theme_id}_{i}"
+                    article_ids.append(article_id)
+
+                    nodes.append({
+                        "id": article_id,
+                        "label": article.get("title", "")[:25],
+                        "type": "product",
+                        "parentId": theme_id,
+                        "data": {
+                            "match_score": int(article.get("score", 0.7) * 100),
+                            "source": article.get("source", ""),
+                            "date": article.get("published_date", ""),
+                            "url": article.get("url", "")
+                        }
+                    })
+                    edge_id += 1
+                    edges.append({"id": f"e{edge_id}", "source": theme_id, "target": article_id})
+
+                # Theme node
                 nodes.append({
-                    "id": news_node_id,
-                    "label": article_title[:25],
-                    "type": "product",
+                    "id": theme_id,
+                    "label": f"{theme_labels.get(theme, theme)} ({len(articles)})",
+                    "type": "category",
                     "parentId": news_cat_id,
-                    "data": {
-                        "match_score": int(article.get("score", 0.7) * 100),
-                        "source": article.get("source", ""),
-                        "date": article.get("published_date", ""),
-                        "url": article.get("url", "")
-                    }
+                    "childIds": article_ids,
+                    "isExpanded": False
                 })
-
                 edge_id += 1
-                edges.append({"id": f"e{edge_id}", "source": news_cat_id, "target": news_node_id})
+                edges.append({"id": f"e{edge_id}", "source": news_cat_id, "target": theme_id})
 
-            if news_ids:
+            if theme_ids:
                 category_ids.append(news_cat_id)
                 nodes.append({
                     "id": news_cat_id,
-                    "label": "Recent News",
+                    "label": f"News & Updates ({len(news)})",
                     "type": "molecule",
                     "parentId": root_id,
-                    "childIds": news_ids,
+                    "childIds": theme_ids,
                     "isExpanded": False
                 })
                 edge_id += 1
                 edges.append({"id": f"e{edge_id}", "source": root_id, "target": news_cat_id})
 
-        # If no data was found, create a minimal structure
+        # === COMPANY DOCUMENTS ===
+        if company_data.get("has_documents"):
+            company_cat_id = "cat_company"
+            doc_ids = []
+
+            documents = company_data.get("documents", [])
+            for i, doc in enumerate(documents[:5]):
+                doc_id = safe_id("doc", f"{i}")
+                doc_ids.append(doc_id)
+
+                nodes.append({
+                    "id": doc_id,
+                    "label": doc.get("filename", f"Document {i+1}")[:25],
+                    "type": "product",
+                    "parentId": company_cat_id,
+                    "data": {
+                        "doc_id": doc.get("doc_id", ""),
+                        "chunks": len(doc.get("chunks", []))
+                    }
+                })
+                edge_id += 1
+                edges.append({"id": f"e{edge_id}", "source": company_cat_id, "target": doc_id})
+
+            if doc_ids:
+                category_ids.append(company_cat_id)
+                nodes.append({
+                    "id": company_cat_id,
+                    "label": f"Company Docs ({len(documents)})",
+                    "type": "molecule",
+                    "parentId": root_id,
+                    "childIds": doc_ids,
+                    "isExpanded": False
+                })
+                edge_id += 1
+                edges.append({"id": f"e{edge_id}", "source": root_id, "target": company_cat_id})
+
+        # Handle empty results
         if not category_ids:
             category_ids = ["cat_no_data"]
             nodes.append({
@@ -276,7 +416,7 @@ class ReportGeneratorWorker(BaseWorker):
             })
             edges.append({"id": "e1", "source": root_id, "target": "cat_no_data"})
 
-        # Add root node with all category children
+        # Add root node
         nodes.insert(0, {
             "id": root_id,
             "label": main_topic,
@@ -288,41 +428,55 @@ class ReportGeneratorWorker(BaseWorker):
         return {"nodes": nodes, "edges": edges}
 
     def _generate_summary(self, query: str, outputs: List[WorkerOutput]) -> str:
-        """Generate executive summary from worker outputs."""
+        """Generate a simple completion message - mindmap contains all the data."""
 
-        summary_parts = [f"## Executive Summary: {query}\n"]
+        # Count what data was found
+        patent_count = 0
+        trial_count = 0
+        news_count = 0
+        has_market = False
+        has_company_docs = False
 
         for output in outputs:
             if isinstance(output, dict):
-                worker_name = output.get("worker_name", "Unknown")
+                worker_name = output.get("worker_name", "")
                 data = output.get("data", {})
             else:
-                worker_name = output.worker_name
-                data = output.data
+                worker_name = getattr(output, "worker_name", "")
+                data = getattr(output, "data", {})
 
-            if worker_name == "IQVIA Insights" and data:
-                market = data.get("market_overview", {})
-                summary_parts.append(f"\n### Market Overview")
-                summary_parts.append(f"- Market Size: {market.get('market_size_2024', 'N/A')}")
-                summary_parts.append(f"- Growth Rate: {market.get('cagr', 'N/A')} CAGR")
+            if not data:
+                continue
 
-            elif worker_name == "Patent Landscape" and data:
-                landscape = data.get("landscape_analysis", {})
-                summary_parts.append(f"\n### Intellectual Property")
-                summary_parts.append(f"- Total Patents Identified: {landscape.get('total_patents', 0)}")
-                summary_parts.append(f"- IP Concentration: {landscape.get('ip_concentration', 'N/A')}")
+            if "Patent" in worker_name:
+                patent_count = len(data.get("patents", []))
+            elif "Clinical" in worker_name:
+                trial_count = len(data.get("trials", []))
+            elif "Web" in worker_name or "Intelligence" in worker_name:
+                news_count = len(data.get("news", []))
+            elif "IQVIA" in worker_name or "Market" in worker_name:
+                has_market = bool(data.get("top_products"))
+            elif "Company" in worker_name:
+                has_company_docs = data.get("has_documents", False)
 
-            elif worker_name == "Clinical Trials" and data:
-                trial_summary = data.get("summary", {})
-                summary_parts.append(f"\n### Clinical Development")
-                summary_parts.append(f"- Active Trials: {trial_summary.get('total_trials', 0)}")
+        # Build a simple natural message
+        findings = []
+        if patent_count > 0:
+            findings.append(f"{patent_count} patents")
+        if trial_count > 0:
+            findings.append(f"{trial_count} clinical trials")
+        if news_count > 0:
+            findings.append(f"{news_count} news articles")
+        if has_market:
+            findings.append("market data")
+        if has_company_docs:
+            findings.append("your company documents")
 
-            elif worker_name == "Web Intelligence" and data:
-                sentiment = data.get("sentiment_analysis", {})
-                summary_parts.append(f"\n### Market Sentiment")
-                summary_parts.append(f"- Overall: {sentiment.get('overall_sentiment', 'N/A')}")
-
-        return "\n".join(summary_parts)
+        if findings:
+            findings_str = ", ".join(findings[:-1]) + (" and " + findings[-1] if len(findings) > 1 else findings[0])
+            return f"Research complete for **{query}**. I found {findings_str}. Explore the interactive mindmap to dive into the details."
+        else:
+            return f"Research complete for **{query}**. The mindmap is ready - click on nodes to explore the findings."
 
     def _compile_report(self, query: str, outputs: List[WorkerOutput], summary: str) -> Dict[str, Any]:
         """Compile full analysis report."""

@@ -54,7 +54,17 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         {isUser ? (
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
         ) : (
-          <div className="text-sm prose prose-sm prose-invert max-w-none prose-p:my-1 prose-headings:mt-3 prose-headings:mb-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:bg-gray-800 prose-pre:text-gray-100 prose-code:text-accent-cyan prose-code:bg-gray-800/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-strong:text-accent-cyan prose-a:text-accent-cyan">
+          <div className="text-sm prose prose-sm max-w-none
+            prose-p:text-gray-800 prose-p:my-1
+            prose-headings:text-gray-900 prose-headings:mt-3 prose-headings:mb-1
+            prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-li:text-gray-800
+            prose-pre:bg-gray-100 prose-pre:text-gray-800
+            prose-code:text-accent-cyan prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded
+            prose-strong:text-gray-900 prose-strong:font-semibold
+            prose-a:text-accent-cyan prose-a:no-underline hover:prose-a:underline
+            prose-h1:text-gray-900 prose-h2:text-gray-900 prose-h3:text-gray-900
+            [&>p]:text-gray-800 [&>ul]:text-gray-800 [&>ol]:text-gray-800
+            text-gray-800">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>
               {message.content}
             </ReactMarkdown>

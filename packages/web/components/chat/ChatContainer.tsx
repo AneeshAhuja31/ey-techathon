@@ -14,15 +14,7 @@ import { chatApi, jobsApi } from "@/lib/api";
 
 const POLL_INTERVAL = 2000;
 
-// Keywords that indicate a research job should be started
-const RESEARCH_KEYWORDS = [
-  "research", "analyze", "comprehensive", "deep dive", "patent search",
-  "market analysis", "clinical trials", "find patents", "investigate",
-  "full analysis", "detailed study", "landscape analysis", "competitive analysis",
-  "start analysis", "run analysis", "begin research"
-];
-
-// Keywords that indicate a company-specific query
+// Keywords that indicate a company-specific query (used for document upload prompts)
 const COMPANY_KEYWORDS = [
   "company data", "our documents", "our data", "internal", "uploaded",
   "my documents", "company documents", "proprietary", "internal data",
@@ -124,12 +116,6 @@ export function ChatContainer() {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
-
-  // Check if message is a research query
-  const isResearchQuery = (message: string): boolean => {
-    const messageLower = message.toLowerCase();
-    return RESEARCH_KEYWORDS.some(keyword => messageLower.includes(keyword));
-  };
 
   // Check if message is a company-specific query
   const isCompanyQuery = (message: string): boolean => {
@@ -389,21 +375,16 @@ Once uploaded, I can include your proprietary data in the analysis alongside mar
     } catch (error) {
       console.log("Backend unavailable, using fallback response");
 
-      // Check if this looks like a research query
-      if (isResearchQuery(content)) {
-        // Start research job directly (include company data if available and requested)
-        await startResearchJob(content, wantsCompanyData && hasDocuments);
-      } else {
-        // Provide a fallback response for regular questions
-        const fallbackResponse = getFallbackResponse(content, wantsCompanyData, hasDocuments);
-        const assistantMessage = {
-          id: (Date.now() + 1).toString(),
-          role: "assistant" as const,
-          content: fallbackResponse,
-          timestamp: new Date().toISOString(),
-        };
-        addMessage(assistantMessage);
-      }
+      // Backend is unavailable - provide a fallback response
+      // Note: Research queries require backend LLM classification, so we just provide a helpful message
+      const fallbackResponse = getFallbackResponse(content, wantsCompanyData, hasDocuments);
+      const assistantMessage = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant" as const,
+        content: fallbackResponse,
+        timestamp: new Date().toISOString(),
+      };
+      addMessage(assistantMessage);
     }
 
     setLoading(false);
@@ -472,6 +453,25 @@ function getFallbackResponse(message: string, isCompanyQuery: boolean = false, h
 Once uploaded, I can combine your proprietary data with market research, patents, and clinical trials!`;
   }
 
+  // Check for explicit research triggers
+  const hasResearchTrigger = [
+    "do research", "create mindmap", "analyze comprehensively",
+    "full analysis", "research on", "investigate", "run analysis"
+  ].some(trigger => messageLower.includes(trigger));
+
+  if (hasResearchTrigger) {
+    return `I'd love to run a comprehensive research analysis for you, but the backend service is currently unavailable.
+
+**Please try again in a moment.** When available, I can:
+- Search patents across Google Patents
+- Analyze clinical trials
+- Gather market intelligence
+- Search scientific literature
+- Create an interactive mind map
+
+The research will be triggered when you explicitly say "do research on [topic]" or "create mindmap for [topic]".`;
+  }
+
   if (messageLower.includes("glp-1") || messageLower.includes("glp1")) {
     const companyAddition = hasDocuments ? "\n\nI can also include your company documents in the analysis!" : "";
     return `GLP-1 (Glucagon-like peptide-1) is an incretin hormone crucial for glucose metabolism.
@@ -482,7 +482,7 @@ Once uploaded, I can combine your proprietary data with market research, patents
 - **Rybelsus** (oral semaglutide) - for diabetes
 - **Mounjaro** (tirzepatide) - dual GIP/GLP-1 agonist
 
-Would you like me to run a comprehensive research analysis? Just say "research GLP-1 agonists".${companyAddition}`;
+To run a comprehensive analysis, say "do research on GLP-1 agonists" or "create mindmap for GLP-1".${companyAddition}`;
   }
 
   if (messageLower.includes("semaglutide")) {
@@ -494,7 +494,17 @@ Would you like me to run a comprehensive research analysis? Just say "research G
 
 Clinical trials show up to 15% weight loss and significant HbA1c reduction.
 
-Say "research semaglutide" for a detailed analysis.`;
+Say "do research on semaglutide" for a comprehensive analysis with patents, trials, and market data.`;
+  }
+
+  if (messageLower.includes("patent") && !hasResearchTrigger) {
+    return `I can help you search patents! You can:
+
+- **View patent list**: "show patents for semaglutide"
+- **Search by company**: "show patents by Novo Nordisk"
+- **Lookup specific patent**: "find patent US10456789"
+
+For a full patent landscape analysis with mind map, say "do research on [topic]".`;
   }
 
   if (messageLower.includes("hello") || messageLower.includes("hi") || messageLower.includes("hey")) {
@@ -505,52 +515,50 @@ Say "research semaglutide" for a detailed analysis.`;
 
 I can help with:
 - **Drug Information** - Mechanisms, compounds, molecules
-- **Market Analysis** - Industry trends and competitive landscape
-- **Patent Intelligence** - IP landscape and FTO analysis
-- **Clinical Trials** - Trial data and regulatory insights
-- **Company Data** - Analysis of your uploaded documents (RAG)
+- **Patent Search** - "show patents for [topic]"
+- **Full Research** - "do research on [topic]" or "create mindmap for [topic]"
+- **Company Data** - Analysis of your uploaded documents
 
-Ask me anything, or say "research [topic]" to start a comprehensive analysis!${docStatus}`;
+Ask me anything!${docStatus}`;
   }
 
   if (messageLower.includes("help") || messageLower.includes("what can you do")) {
     return `I'm DrugAI - here's what I can help with:
 
-**Ask Questions About:**
+**Ask Questions:**
 - Drug mechanisms and molecular targets
 - Pharmaceutical compounds
 - Disease pathways
-- Market trends
-- Patent strategies
-- Clinical trial phases
+- General pharma knowledge
 
-**Start Research:**
-Say "research [topic]" to deploy AI agents for:
-- Market intelligence (IQVIA data)
-- Patent landscape analysis (Google Patents)
-- Clinical trial summaries
-- Scientific literature (PubMed)
-- Web intelligence
-${hasDocuments ? "- Company document analysis (RAG)" : ""}
+**Search Patents:**
+- "show patents for [compound]"
+- "find patents by [company]"
+- "lookup patent [patent ID]"
 
-**Company Data:**
+**Full Research Analysis:**
+To trigger comprehensive research with a mind map, use explicit requests:
+- "do research on [topic]"
+- "create mindmap for [topic]"
+- "analyze [topic] comprehensively"
+
+This will deploy AI agents for patents, clinical trials, market data, and literature.
+
 ${hasDocuments
-  ? "Your documents are ready! Include 'company data' in your query to analyze them."
-  : "Upload documents with 📎 to enable company-specific analysis."}
-
-Example: "Research GLP-1 agonists for obesity${hasDocuments ? " using company data" : ""}"`;
+  ? "**Company Data:** Your documents are ready for analysis!"
+  : "**Tip:** Upload documents with 📎 to enable company-specific analysis."}`;
   }
 
   return `I'm DrugAI, specialized in drug discovery and pharmaceutical research.
 
 Ask me about:
 - Drug mechanisms and molecules
-- Patent landscapes
+- Patent information ("show patents for...")
 - Clinical trials
 - Market analysis
 ${hasDocuments ? "- Your company documents" : ""}
 
-Or say "research [topic]" to start a comprehensive analysis with our AI agents.
+For comprehensive research with a mind map, say **"do research on [topic]"** or **"create mindmap for [topic]"**.
 
 ${!hasDocuments ? "**Tip:** Upload company documents with 📎 for proprietary data analysis.\n\n" : ""}What would you like to know?`;
 }

@@ -1,6 +1,8 @@
-"""Chat initiation endpoint with dual query mode detection."""
+"""Chat initiation endpoint with LLM-based explicit intent detection."""
 import json
-from typing import Optional, Tuple, List
+import re
+import logging
+from typing import Optional, Tuple, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +22,7 @@ from app.models.document import Document
 from app.core.config import settings
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # System prompt for the AI assistant
 SYSTEM_PROMPT = """You are DrugAI, an intelligent assistant specialized in drug discovery and pharmaceutical research.
@@ -31,30 +34,69 @@ You help researchers with:
 - Answering questions about diseases and therapeutic targets
 
 You are knowledgeable, helpful, and provide accurate scientific information.
-When users ask for comprehensive research, patent analysis, or market studies, suggest they use the research feature which will deploy specialized AI agents for in-depth analysis.
+When users explicitly request comprehensive research, analysis, or mindmaps, suggest they use clear commands like "research [topic]" or "create mindmap for [topic]".
 
 Keep responses concise but informative. Use scientific terminology appropriately."""
 
-# Keywords that indicate a research job should be started
-RESEARCH_KEYWORDS = [
-    "research", "analyze", "comprehensive", "deep dive", "patent search",
-    "market analysis", "clinical trials", "find patents", "investigate",
-    "full analysis", "detailed study", "landscape analysis", "competitive analysis",
-    "start analysis", "run analysis", "begin research"
-]
+# Intent classification prompt for explicit detection
+INTENT_CLASSIFICATION_PROMPT = """You are an intent classifier for a pharmaceutical research platform. Analyze the user's message to determine what they want.
 
-# Keywords that indicate company-specific data is requested
+CONVERSATION HISTORY:
+{conversation_history}
+
+CURRENT USER MESSAGE: "{message}"
+
+DOCUMENT CONTEXT:{doc_context}
+
+Classify the intent into ONE of these categories:
+
+1. **DIRECT_ANSWER**: Questions that can be answered directly. THIS IS THE DEFAULT.
+   - "What is X?", "How does X work?", "Explain X", "Tell me about X"
+   - "Analyze X" or "Based on Y, analyze X" → DIRECT_ANSWER (just wants explanation)
+   - Any question that doesn't explicitly request research/mindmap
+
+2. **FULL_RESEARCH**: ONLY when user uses these EXACT command phrases:
+   - "do research on [topic]" / "do research about [topic]"
+   - "create mindmap for [topic]" / "create a mindmap"
+   - "run full analysis on [topic]"
+   - "conduct comprehensive research"
+
+   CRITICAL: These do NOT trigger FULL_RESEARCH:
+   - "analyze X" → DIRECT_ANSWER
+   - "what's the research on X" → DIRECT_ANSWER
+   - "I'm researching X" → DIRECT_ANSWER
+   - "tell me about X" → DIRECT_ANSWER
+   - "based on X, analyze Y" → DIRECT_ANSWER
+
+3. **DIRECT_PATENT**: User specifically wants patent search.
+   - "show patents for X", "find patents about X", "list patents"
+   - Specific patent: "show patent US10456789"
+
+4. **COMPANY_DATA**: User wants to query their uploaded documents.
+   - "what do our documents say about X"
+   - "search our company files for X"
+   - Contains: "our documents", "our files", "company data", "uploaded files"
+
+RULES:
+- Default is ALWAYS DIRECT_ANSWER
+- FULL_RESEARCH requires EXPLICIT command phrases like "do research on" or "create mindmap for"
+- "Analyze", "investigate", "look into" alone → DIRECT_ANSWER
+- When in doubt → DIRECT_ANSWER
+
+Respond in JSON:
+{{
+    "intent": "DIRECT_ANSWER|FULL_RESEARCH|DIRECT_PATENT|COMPANY_DATA",
+    "confidence": 0.0-1.0,
+    "patent_id": null,
+    "reasoning": "brief explanation"
+}}"""
+
+# Keywords for company-specific data (used for context, not primary classification)
 COMPANY_KEYWORDS = [
     "company data", "our documents", "internal", "uploaded",
     "company files", "our files", "my documents", "proprietary",
-    "from our", "in our", "company's", "organization", "document"
+    "from our", "in our", "company's", "organization"
 ]
-
-
-def is_research_query(message: str) -> bool:
-    """Determine if the message is requesting a research job."""
-    message_lower = message.lower()
-    return any(keyword in message_lower for keyword in RESEARCH_KEYWORDS)
 
 
 def is_company_specific_query(message: str) -> bool:
@@ -99,158 +141,300 @@ async def check_documents_and_relevance(message: str) -> Tuple[bool, int, List[d
     return has_documents, doc_count, relevant_results
 
 
-async def classify_query_with_llm(
+async def classify_intent_with_llm(
     message: str,
-    has_documents: bool,
-    relevant_results: List[dict]
-) -> Tuple[bool, bool, str]:
+    conversation_history: List[Dict[str, str]] = None,
+    has_documents: bool = False,
+    relevant_results: List[dict] = None
+) -> Dict[str, Any]:
     """
-    Use LLM to classify query intent with context about available documents.
+    Use LLM to classify user intent with explicit detection.
+    Only triggers research/mindmap when user EXPLICITLY requests it.
 
     Returns:
-        Tuple of (is_company_query, should_run_full_analysis, reasoning)
+        Dict with intent, confidence, patent_id (if applicable), reasoning
     """
-    # First check keyword-based detection
-    keyword_company = is_company_specific_query(message)
-    keyword_research = is_research_query(message)
+    # First check for specific patent ID in message
+    patent_id_match = re.search(r'(US[\d,]+|EP[\d]+|WO[\d/]+|CN[\d]+[A-Z]?)', message, re.IGNORECASE)
 
-    # If documents exist and we found relevant matches, likely a company query
-    has_relevant_docs = has_documents and len(relevant_results) > 0
-
-    # If no API key, use keyword + vector search based detection
+    # If no API key, use fallback detection
     if not settings.openai_api_key:
-        is_company = keyword_company or has_relevant_docs
-        should_analyze = keyword_research or is_company
-        return is_company, should_analyze, "keyword_vector_fallback"
+        return _fallback_intent_classification(message, patent_id_match)
 
     try:
         client = OpenAI(api_key=settings.openai_api_key)
 
-        # Build context about document relevance
+        # Format conversation history
+        history_text = "None"
+        if conversation_history:
+            history_lines = []
+            for msg in conversation_history[-5:]:  # Last 5 messages
+                role = msg.get("role", "user")
+                content = msg.get("content", "")[:200]  # Truncate
+                history_lines.append(f"{role.upper()}: {content}")
+            history_text = "\n".join(history_lines)
+
+        # Build document context
         doc_context = ""
-        if has_relevant_docs:
-            snippets = [f'- "{r["text"][:150]}..." (score: {r.get("score", 0):.2f})' for r in relevant_results[:3]]
-            doc_context = f"""
-The user has {len(relevant_results)} uploaded company documents that are RELEVANT to this query.
-Relevant document snippets found via vector search:
-{chr(10).join(snippets)}
-
-This strongly suggests the user wants to query their company documents.
-"""
+        if relevant_results and len(relevant_results) > 0:
+            snippets = [f'- "{r["text"][:100]}..."' for r in relevant_results[:2]]
+            doc_context = f"\nUser has uploaded documents. Relevant snippets found:\n{chr(10).join(snippets)}"
         elif has_documents:
-            doc_context = "\nThe user has uploaded company documents, but they don't seem directly relevant to this query."
+            doc_context = "\nUser has uploaded company documents (not directly relevant to this query)."
         else:
-            doc_context = "\nNo company documents have been uploaded."
+            doc_context = "\nNo company documents uploaded."
 
-        classification_prompt = f"""Analyze this user query and classify its intent.
-
-USER QUERY: "{message}"
-
-CONTEXT:{doc_context}
-
-Keyword detection found:
-- Company-related keywords: {keyword_company}
-- Research/analysis keywords: {keyword_research}
-
-Classify the query:
-1. is_company_query: Is the user asking about or wanting to use their company/uploaded documents? (True if relevant docs found OR company keywords detected)
-2. should_run_analysis: Should this trigger a comprehensive analysis pipeline? (True for company queries with docs, research requests, or complex analysis needs)
-
-Consider:
-- If relevant document snippets were found via vector search → definitely a company query that needs analysis
-- If query mentions "our", "company", "uploaded", "internal", "documents" → company query
-- If query asks for research, analysis, investigation → needs full analysis
-- Simple greetings or basic factual questions → don't need analysis
-
-Respond in JSON format only:
-{{"is_company_query": true/false, "should_run_analysis": true/false, "reasoning": "brief explanation"}}"""
+        prompt = INTENT_CLASSIFICATION_PROMPT.format(
+            conversation_history=history_text,
+            message=message,
+            doc_context=doc_context
+        )
 
         response = client.chat.completions.create(
-            model="gpt-4o-mini",  # Fast model for classification
+            model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a query classifier. Respond only with valid JSON."},
-                {"role": "user", "content": classification_prompt}
+                {"role": "system", "content": "You are an intent classifier. Respond only with valid JSON."},
+                {"role": "user", "content": prompt}
             ],
             max_tokens=200,
             temperature=0,
         )
 
         result_text = response.choices[0].message.content.strip()
-        # Handle potential markdown code blocks
+        # Handle markdown code blocks
         if result_text.startswith("```"):
             result_text = result_text.split("```")[1]
             if result_text.startswith("json"):
                 result_text = result_text[4:]
+
         result = json.loads(result_text)
 
-        return (
-            result.get("is_company_query", keyword_company or has_relevant_docs),
-            result.get("should_run_analysis", keyword_research),
-            result.get("reasoning", "llm_classification")
-        )
+        # Override patent_id if we found one in message
+        if patent_id_match and result.get("intent") == "DIRECT_PATENT":
+            result["patent_id"] = patent_id_match.group(1)
+
+        logger.info(f"Intent classification: {result}")
+        return result
+
     except Exception as e:
-        print(f"LLM classification error: {e}")
-        # Fallback: if we have relevant docs, treat as company query needing analysis
-        is_company = keyword_company or has_relevant_docs
-        should_analyze = keyword_research or has_relevant_docs
-        return is_company, should_analyze, f"fallback: {str(e)}"
+        logger.error(f"Intent classification error: {e}")
+        return _fallback_intent_classification(message, patent_id_match)
+
+
+async def generate_rag_response(
+    message: str,
+    document_context: str,
+    conversation_history: List[Dict[str, str]] = None
+) -> str:
+    """
+    Generate an LLM response using document context (RAG).
+    This is used for COMPANY_DATA queries - simple RAG, not full research pipeline.
+    """
+    if not settings.openai_api_key:
+        return f"Based on your company documents, I found relevant information about your query. However, I need an API key to synthesize a proper response. Please configure OpenAI API key."
+
+    try:
+        client = OpenAI(api_key=settings.openai_api_key)
+
+        rag_system_prompt = """You are DrugAI, an intelligent assistant for pharmaceutical research.
+You have access to the user's company documents. Use the provided document context to answer their question.
+
+IMPORTANT:
+- Base your answer primarily on the document context provided
+- If the context doesn't contain relevant information, say so clearly
+- Be concise but thorough
+- Cite specific information from the documents when possible"""
+
+        messages = [{"role": "system", "content": rag_system_prompt}]
+
+        # Add conversation history
+        if conversation_history:
+            for msg in conversation_history[-5:]:
+                messages.append({
+                    "role": msg.get("role", "user"),
+                    "content": msg.get("content", "")
+                })
+
+        # Add document context and user message
+        user_content = f"""DOCUMENT CONTEXT:
+{document_context}
+
+USER QUESTION: {message}
+
+Please answer based on the document context above."""
+
+        messages.append({"role": "user", "content": user_content})
+
+        response = client.chat.completions.create(
+            model=settings.llm_model,
+            messages=messages,
+            max_tokens=1000,
+            temperature=0.7,
+        )
+
+        return response.choices[0].message.content
+
+    except Exception as e:
+        logger.error(f"RAG response error: {e}")
+        return f"I found relevant information in your documents but encountered an error generating the response. Please try again."
+
+
+def _fallback_intent_classification(message: str, patent_id_match=None) -> Dict[str, Any]:
+    """Fallback intent classification when LLM is unavailable. Very strict - defaults to DIRECT_ANSWER."""
+    message_lower = message.lower()
+
+    # Check for specific patent ID
+    if patent_id_match:
+        return {
+            "intent": "DIRECT_PATENT",
+            "confidence": 0.9,
+            "patent_id": patent_id_match.group(1),
+            "reasoning": "Specific patent ID detected"
+        }
+
+    # Check for explicit patent search triggers
+    PATENT_TRIGGERS = [
+        "show patents", "find patents", "list patents", "search patents",
+        "patents about", "patents for", "patent search", "get patent"
+    ]
+    if any(trigger in message_lower for trigger in PATENT_TRIGGERS):
+        return {
+            "intent": "DIRECT_PATENT",
+            "confidence": 0.85,
+            "patent_id": None,
+            "reasoning": "Patent search keywords detected"
+        }
+
+    # Check for VERY EXPLICIT research/mindmap triggers ONLY
+    # These must be command phrases, not just keywords
+    RESEARCH_TRIGGERS = [
+        "do research on", "do research about",
+        "create mindmap", "create a mindmap", "make mindmap", "generate mindmap",
+        "run full analysis on", "conduct comprehensive research"
+    ]
+    if any(trigger in message_lower for trigger in RESEARCH_TRIGGERS):
+        return {
+            "intent": "FULL_RESEARCH",
+            "confidence": 0.85,
+            "patent_id": None,
+            "reasoning": "Explicit research/mindmap command detected"
+        }
+
+    # Check for company data keywords - but this will do RAG, not full research
+    if is_company_specific_query(message):
+        return {
+            "intent": "COMPANY_DATA",
+            "confidence": 0.8,
+            "patent_id": None,
+            "reasoning": "Company data keywords detected - will do RAG query"
+        }
+
+    # Default to direct answer (this is the most common case)
+    return {
+        "intent": "DIRECT_ANSWER",
+        "confidence": 0.7,
+        "patent_id": None,
+        "reasoning": "Default to direct answer - no explicit research command found"
+    }
 
 
 @router.post("/simple", response_model=SimpleChatResponse)
 async def simple_chat(request: SimpleChatRequest):
     """
-    Simple chat endpoint with smart query mode detection.
+    Simple chat endpoint with LLM-based explicit intent detection.
 
     Query Modes:
-    1. General Mode: Uses OpenAI for simple questions (default)
-    2. Research Mode: Triggers agentic pipeline for comprehensive analysis
-    3. Company-Specific Mode: Triggers full analysis with company RAG included
+    1. DIRECT_ANSWER: Uses OpenAI for simple questions (default)
+    2. FULL_RESEARCH: Only when user EXPLICITLY requests research/mindmap
+    3. DIRECT_PATENT: When user asks for patents specifically
+    4. COMPANY_DATA: When user wants to query uploaded documents
 
-    Uses LLM + vector search for intelligent intent classification.
-    Company queries with documents now trigger the full pipeline (with progress bar).
+    Key principle: Only trigger research pipeline when user explicitly asks.
+    "What is X" → direct answer, not research.
+    "Do research on X" → triggers research pipeline.
     """
     try:
         # Step 1: Check documents and do relevance search
         has_documents, doc_count, relevant_results = await check_documents_and_relevance(request.message)
 
-        # Step 2: Use LLM to classify intent with document context
-        is_company_query, should_run_analysis, reasoning = await classify_query_with_llm(
-            request.message,
-            has_documents,
-            relevant_results
+        # Step 2: Use LLM to classify intent with conversation context
+        intent_result = await classify_intent_with_llm(
+            message=request.message,
+            conversation_history=request.conversation_history,
+            has_documents=has_documents,
+            relevant_results=relevant_results
         )
 
-        print(f"Query classification: company={is_company_query}, analyze={should_run_analysis}, reason={reasoning}")
+        intent = intent_result.get("intent", "DIRECT_ANSWER")
+        patent_id = intent_result.get("patent_id")
+        confidence = intent_result.get("confidence", 0.7)
 
-        # Step 3: Handle company query without documents
-        if is_company_query and not has_documents:
+        logger.info(f"Query intent: {intent} (confidence: {confidence})")
+
+        # Step 3: Handle based on intent
+        if intent == "DIRECT_PATENT":
+            # Return signal to trigger direct patent search
             return SimpleChatResponse(
-                response="I'd love to help analyze your company data! However, I don't see any uploaded documents yet. Please upload your company documents (PDF, DOCX, TXT) using the upload button, and then I can search and analyze your proprietary information.",
+                response="",
                 is_research_query=False,
-                is_company_query=True,
-                requires_documents=True
+                is_patent_query=True,
+                patent_id=patent_id,
+                is_company_query=False
             )
 
-        # Step 4: Company query with documents OR research query → trigger full analysis pipeline
-        # This shows the progress bar with all nodes including company RAG
-        if should_run_analysis or (is_company_query and has_documents):
-            return SimpleChatResponse(
-                response="",  # No canned message - frontend will start job directly
-                is_research_query=True,  # This triggers the job with progress bar
-                is_company_query=is_company_query  # Frontend uses this to include company data
-            )
-
-        # Step 5: Simple keyword-based research check (fallback)
-        if is_research_query(request.message):
+        if intent == "FULL_RESEARCH":
+            # User explicitly requested research/mindmap
+            is_company_query = is_company_specific_query(request.message) or (has_documents and len(relevant_results) > 0)
             return SimpleChatResponse(
                 response="",
                 is_research_query=True,
                 is_company_query=is_company_query
             )
 
-        # Use OpenAI for regular chat (General Mode)
+        if intent == "COMPANY_DATA":
+            # User wants to query company documents - do RAG, NOT full research
+            if not has_documents:
+                return SimpleChatResponse(
+                    response="I'd love to help with your company data! However, no documents have been uploaded yet. Please upload your company documents (PDF, DOCX, TXT) using the upload button.",
+                    is_research_query=False,
+                    is_company_query=True,
+                    requires_documents=True
+                )
+
+            # Has documents - do RAG query and return LLM response directly
+            # Build document context from relevant results
+            if relevant_results:
+                doc_context = "\n\n".join([
+                    f"[From: {r.get('metadata', {}).get('filename', 'document')}]\n{r.get('text', '')}"
+                    for r in relevant_results[:5]
+                ])
+            else:
+                # No relevant results found, do a fresh search
+                vector_store = get_vector_store()
+                search_results = await vector_store.search(query=request.message, limit=5)
+                if search_results:
+                    doc_context = "\n\n".join([
+                        f"[From: {r.get('metadata', {}).get('filename', 'document')}]\n{r.get('text', '')}"
+                        for r in search_results[:5]
+                    ])
+                else:
+                    doc_context = "No relevant information found in your documents for this query."
+
+            # Generate LLM response with document context
+            rag_response = await generate_rag_response(
+                message=request.message,
+                document_context=doc_context,
+                conversation_history=request.conversation_history
+            )
+
+            return SimpleChatResponse(
+                response=rag_response,
+                is_research_query=False,  # NO research pipeline - just RAG response
+                is_company_query=True
+            )
+
+        # Step 4: DIRECT_ANSWER - Use OpenAI for regular chat
         if not settings.openai_api_key:
-            # Fallback response if no API key
             return SimpleChatResponse(
                 response=get_fallback_response(request.message),
                 is_research_query=False
@@ -263,7 +447,7 @@ async def simple_chat(request: SimpleChatRequest):
 
         # Add conversation history if provided
         if request.conversation_history:
-            for msg in request.conversation_history[-10:]:  # Last 10 messages for context
+            for msg in request.conversation_history[-10:]:
                 messages.append({
                     "role": msg.get("role", "user"),
                     "content": msg.get("content", "")
@@ -288,7 +472,7 @@ async def simple_chat(request: SimpleChatRequest):
         )
 
     except Exception as e:
-        print(f"Chat error: {e}")
+        logger.error(f"Chat error: {e}")
         return SimpleChatResponse(
             response=get_fallback_response(request.message),
             is_research_query=False

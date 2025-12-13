@@ -35,8 +35,16 @@ class WebIntelligenceWorker(BaseWorker):
                 logger.warning(f"Failed to initialize Tavily client: {e}")
 
     async def execute(self, state: MasterState) -> Dict[str, Any]:
-        """Execute web intelligence gathering using Tavily."""
-        query = state["query"]
+        """Execute web intelligence gathering using Tavily.
+
+        Uses refined query if available (from query_refiner node),
+        otherwise uses the original query.
+        """
+        # Use refined web query if available, otherwise use original
+        refined_queries = state.get("refined_queries", {})
+        query = refined_queries.get("web", state["query"])
+
+        logger.info(f"Web search with query: {query}")
 
         await self.update_progress(10, "Starting web search...")
 
